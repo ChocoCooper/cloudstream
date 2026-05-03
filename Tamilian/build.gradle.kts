@@ -1,3 +1,9 @@
+plugins {
+    id("com.android.library")
+    kotlin("android")
+    id("com.lagradost.cloudstream3.gradle")
+}
+
 // use an integer for version numbers
 version = 2
 
@@ -20,14 +26,13 @@ cloudstream {
      * 3: Beta only
      * */
     status = 1 // will be 3 if unspecified
-    tvTypes = listOf(
-        "Movies"
-    )
+    
+    // Note: Cloudstream uses singular "Movie", not "Movies"
+    tvTypes = listOf("Movie")
 
     iconUrl = "https://www.google.com/s2/favicons?sz=64&domain=tamilian.io"
 
     isCrossPlatform = false
-
 }
 
 dependencies {
