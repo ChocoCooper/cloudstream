@@ -11,7 +11,7 @@ cloudstream {
     language = "ta"
     // All of these properties are optional, you can safely remove them
     description = "Movies (Tamil)"
-    authors = listOf("NivinCNC", "ChocoCooper")
+    authors = listOf("ChocoCooper")
     /**
      * Status int as the following:
      * 0: Down
@@ -24,7 +24,8 @@ cloudstream {
         "Movies"
     )
 
-    iconUrl = "https://tamilian.io/favicon.ico"
+    iconUrl = "https://www.google.com/s2/favicons?sz=64&domain=tamilian.io"
+
     isCrossPlatform = false
 
 }
