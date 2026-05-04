@@ -1,7 +1,7 @@
 package com.Tamilian
 
 import com.fasterxml.jackson.annotation.JsonProperty
-import com.lagradost.cloudstream3.HomePageList // Added for multiple sliders
+import com.lagradost.cloudstream3.HomePageList
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
@@ -34,16 +34,12 @@ class Tamilian : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // URL 1: Latest Tamil Movies
         val latestUrl = "$TMDB_API/discover/movie?api_key=$TMDB_KEY&with_original_language=ta&vote_count.gte=2&sort_by=primary_release_date.desc&page=$page"
-        // URL 2: Tamil Dubbed Movies (using unblocked TMDB_API and appending &page=$page for infinite scroll)
         val dubbedUrl = "$TMDB_API/discover/movie?api_key=$TMDB_KEY&with_original_language=en&with_spoken_languages=ta&sort_by=popularity.desc&page=$page"
 
-        // Fetch data for both sliders
         val latestResponse = app.get(latestUrl).parsedSafe<TmdbResponse>()
         val dubbedResponse = app.get(dubbedUrl).parsedSafe<TmdbResponse>()
 
-        // 1. Map Latest Tamil Movies and strictly limit to 12 items
         val latestItems = latestResponse?.results?.mapNotNull { movie ->
             val title = movie.title ?: return@mapNotNull null
             val id = movie.id?.toString() ?: return@mapNotNull null
@@ -55,9 +51,8 @@ class Tamilian : MainAPI() {
             ) {
                 this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
             }
-        }?.take(12) ?: listOf() // <-- Limits to exactly 12 items
+        }?.take(12) ?: listOf()
 
-        // 2. Map Tamil Dubbed Movies and strictly limit to 10 items
         val dubbedItems = dubbedResponse?.results?.mapNotNull { movie ->
             val title = movie.title ?: return@mapNotNull null
             val id = movie.id?.toString() ?: return@mapNotNull null
@@ -69,10 +64,10 @@ class Tamilian : MainAPI() {
             ) {
                 this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
             }
-        }?.take(10) ?: listOf() // <-- Limits to exactly 10 items
+        }?.take(10) ?: listOf()
 
-        // 3. Return multiple sliders inside the HomePageResponse
-        return HomePageResponse(
+        // FIX: Using the correct newHomePageResponse wrapper
+        return newHomePageResponse(
             listOf(
                 HomePageList("Latest Tamil Movies", latestItems),
                 HomePageList("Tamil Dubbed Movies", dubbedItems)
