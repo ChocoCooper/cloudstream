@@ -19,6 +19,9 @@ import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 
 class Tamilian : MainAPI() {
     override var name = "Tamilian"
@@ -51,7 +54,7 @@ class Tamilian : MainAPI() {
             ) {
                 this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
             }
-        }?.take(12) ?: listOf()
+        } ?: listOf()
 
         val dubbedItems = dubbedResponse?.results?.mapNotNull { movie ->
             val title = movie.title ?: return@mapNotNull null
@@ -64,9 +67,8 @@ class Tamilian : MainAPI() {
             ) {
                 this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
             }
-        }?.take(10) ?: listOf()
+        } ?: listOf()
 
-        // FIX: Using the correct newHomePageResponse wrapper
         return newHomePageResponse(
             listOf(
                 HomePageList("Latest Tamil Movies", latestItems),
@@ -79,18 +81,36 @@ class Tamilian : MainAPI() {
         val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&with_original_language=ta&query=$query"
         val response = app.get(url).parsedSafe<TmdbResponse>()
 
-        return response?.results?.mapNotNull { movie ->
-            val title = movie.title ?: return@mapNotNull null
-            val id = movie.id?.toString() ?: return@mapNotNull null
-            
-            newMovieSearchResponse(
-                name = title,
-                url = "$mainUrl/$id",
-                type = TvType.Movie
-            ) {
-                this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
-            }
-        } ?: emptyList()
+        // Using coroutineScope to run availability checks in parallel
+        return coroutineScope {
+            response?.results?.map { movie ->
+                async {
+                    val title = movie.title ?: return@async null
+                    val id = movie.id?.toString() ?: return@async null
+                    
+                    // Check if Embedojo actually has this movie
+                    val isAvailable = try {
+                        val res = app.get("$HOST/tamil/tmdb/$id")
+                        // If the page contains the player script, it's available
+                        res.text.contains("FirePlayer")
+                    } catch (e: Exception) {
+                        false
+                    }
+
+                    if (isAvailable) {
+                        newMovieSearchResponse(
+                            name = title,
+                            url = "$mainUrl/$id",
+                            type = TvType.Movie
+                        ) {
+                            this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+                        }
+                    } else {
+                        null
+                    }
+                }
+            }?.awaitAll()?.filterNotNull() ?: emptyList()
+        }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -156,8 +176,6 @@ class Tamilian : MainAPI() {
         return true
     }
 
-    // --- JSON Parsing Data Classes ---
-    
     data class TmdbResponse(
         @JsonProperty("results") val results: List<TmdbMovie>?
     )
