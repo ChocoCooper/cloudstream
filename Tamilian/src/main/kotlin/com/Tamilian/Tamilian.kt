@@ -14,15 +14,12 @@ import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.getAndUnpack
 import com.lagradost.cloudstream3.utils.newExtractorLink
 
-
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.MainPageRequest
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-
 
 class Tamilian : TmdbProvider() {
     override var name = "Tamilian"
+    override var mainUrl = HOST // <-- ADDED THIS LINE
     override val hasMainPage = true
     override var lang = "ta"
     override val instantLinkLoading = true
@@ -39,7 +36,6 @@ class Tamilian : TmdbProvider() {
     }
     
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Show star popup on first visit (shared across all CNCVerse plugins)
         return super.getMainPage(page, request)
     }
 
@@ -88,7 +84,6 @@ class Tamilian : TmdbProvider() {
         )
     }
 
-
     data class LinkData(
         @JsonProperty("simklId") val simklId: Int? = null,
         @JsonProperty("traktId") val traktId: Int? = null,
@@ -115,7 +110,6 @@ class Tamilian : TmdbProvider() {
         @JsonProperty("isCartoon") val isCartoon: Boolean = false,
     )
 
-
     data class VideoData(
         val hls: Boolean,
         val videoImage: String,
@@ -125,5 +119,4 @@ class Tamilian : TmdbProvider() {
         val attachmentLinks: List<Any?>,
         val ck: String,
     )
-
 }
