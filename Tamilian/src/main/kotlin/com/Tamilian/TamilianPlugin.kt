@@ -5,7 +5,7 @@ import com.lagradost.cloudstream3.plugins.Plugin
 import android.content.Context
 
 @CloudstreamPlugin
-class HiAnimeProviderPlugin : Plugin() {
+class TamilianPlugin : Plugin() { // <-- RENAMED CLASS
     override fun load(context: Context) {
         Tamilian.context = context
         registerMainAPI(Tamilian())
