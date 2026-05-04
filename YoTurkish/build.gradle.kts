@@ -1,16 +1,4 @@
-plugins {
-    id("com.android.library")
-    kotlin("android")
-    id("com.lagradost.cloudstream3.gradle")
-}
-
 version = 3
-
-android {
-    buildFeatures {
-        buildConfig = true
-    }
-}
 
 cloudstream {
     authors     = listOf("ChocoCooper")
