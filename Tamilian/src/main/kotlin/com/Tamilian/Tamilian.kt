@@ -1,6 +1,7 @@
 package com.Tamilian
 
 import com.fasterxml.jackson.annotation.JsonProperty
+import com.lagradost.cloudstream3.HomePageList // Added for multiple sliders
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
@@ -29,15 +30,21 @@ class Tamilian : MainAPI() {
     companion object {
         const val HOST = "https://embedojo.net"
         const val TMDB_API = "https://api.tmdb.org/3"
-        // Updated with your TMDB key
         const val TMDB_KEY = "fb7bb23f03b6994dafc674c074d01761" 
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$TMDB_API/discover/movie?api_key=$TMDB_KEY&with_original_language=ta&vote_count.gte=2&sort_by=primary_release_date.desc&page=$page"
-        val response = app.get(url).parsedSafe<TmdbResponse>()
+        // URL 1: Latest Tamil Movies
+        val latestUrl = "$TMDB_API/discover/movie?api_key=$TMDB_KEY&with_original_language=ta&vote_count.gte=2&sort_by=primary_release_date.desc&page=$page"
+        // URL 2: Tamil Dubbed Movies (using unblocked TMDB_API and appending &page=$page for infinite scroll)
+        val dubbedUrl = "$TMDB_API/discover/movie?api_key=$TMDB_KEY&with_original_language=en&with_spoken_languages=ta&sort_by=popularity.desc&page=$page"
 
-        val homeItems = response?.results?.mapNotNull { movie ->
+        // Fetch data for both sliders
+        val latestResponse = app.get(latestUrl).parsedSafe<TmdbResponse>()
+        val dubbedResponse = app.get(dubbedUrl).parsedSafe<TmdbResponse>()
+
+        // 1. Map Latest Tamil Movies and strictly limit to 12 items
+        val latestItems = latestResponse?.results?.mapNotNull { movie ->
             val title = movie.title ?: return@mapNotNull null
             val id = movie.id?.toString() ?: return@mapNotNull null
             
@@ -48,9 +55,29 @@ class Tamilian : MainAPI() {
             ) {
                 this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
             }
-        } ?: listOf()
+        }?.take(12) ?: listOf() // <-- Limits to exactly 12 items
 
-        return newHomePageResponse("Latest Tamil Movies", homeItems)
+        // 2. Map Tamil Dubbed Movies and strictly limit to 10 items
+        val dubbedItems = dubbedResponse?.results?.mapNotNull { movie ->
+            val title = movie.title ?: return@mapNotNull null
+            val id = movie.id?.toString() ?: return@mapNotNull null
+            
+            newMovieSearchResponse(
+                name = title,
+                url = "$mainUrl/$id",
+                type = TvType.Movie
+            ) {
+                this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+            }
+        }?.take(10) ?: listOf() // <-- Limits to exactly 10 items
+
+        // 3. Return multiple sliders inside the HomePageResponse
+        return HomePageResponse(
+            listOf(
+                HomePageList("Latest Tamil Movies", latestItems),
+                HomePageList("Tamil Dubbed Movies", dubbedItems)
+            )
+        )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -104,7 +131,6 @@ class Tamilian : MainAPI() {
 
         val token = script?.substringAfter("FirePlayer(\"")?.substringBefore("\",") ?: return false
         
-        // FIX: Create strict browser headers to bypass CDN blocking
         val apiHeaders = mapOf(
             "X-Requested-With" to "XMLHttpRequest",
             "Referer" to pageUrl,
@@ -124,11 +150,9 @@ class Tamilian : MainAPI() {
                     name = name,
                     source = name,
                     url = sourceUrl,
-                    // Treat .txt as .m3u8 implicitly
                     type = ExtractorLinkType.M3U8 
                 ) {
                     this.referer = pageUrl
-                    // FIX: Pass the strict headers directly to ExoPlayer
                     this.headers = apiHeaders
                     this.quality = Qualities.P1080.value 
                 }
