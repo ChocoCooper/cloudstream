@@ -1,0 +1,9 @@
+{
+    "name": "ChocoCooper Repo",
+    "iconUrl": "https://cdn.rafled.com/anime-icons/images/3d72ac09d9c3a20c6a08532330df0fc9336e6de9b624df93df650f264462c21d.jpg",
+    "description": "ChocoCooper Repository",
+    "manifestVersion": 1,
+    "pluginLists": [
+      "https://raw.githubusercontent.com/ChocoCooper/cloudstream/refs/heads/builds/plugins.json"
+    ]
+}
