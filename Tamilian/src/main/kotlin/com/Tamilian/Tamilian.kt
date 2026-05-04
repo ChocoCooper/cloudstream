@@ -1,6 +1,5 @@
 package com.Tamilian
 
-// --- Exact explicit imports needed for MainAPI ---
 import com.fasterxml.jackson.annotation.JsonProperty
 import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
@@ -28,11 +27,7 @@ class Tamilian : MainAPI() {
 
     companion object {
         const val HOST = "https://embedojo.net"
-        
-        // Using api.tmdb.org to bypass Indian ISP blocks on api.themoviedb.org
         const val TMDB_API = "https://api.tmdb.org/3"
-        
-        // IMPORTANT: Replace this with your actual TMDB API Key from developer.themoviedb.org
         const val TMDB_KEY = "fb7bb23f03b6994dafc674c074d01761" 
     }
 
@@ -72,7 +67,7 @@ class Tamilian : MainAPI() {
             this.posterUrl = "https://image.tmdb.org/t/p/w500${details.poster_path}"
             this.plot = details.overview
             this.year = details.release_date?.split("-")?.firstOrNull()?.toIntOrNull()
-            this.rating = details.vote_average?.times(10)?.toInt()
+            // Removed 'rating' entirely to prevent deprecation errors
         }
     }
 
@@ -102,11 +97,11 @@ class Tamilian : MainAPI() {
                         name = name,
                         source = name,
                         url = it.videoSource,
-                        type = ExtractorLinkType.M3U8,
-                        quality = Qualities.P1080.value
+                        type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = "$mainUrl/"
                         this.headers = headers
+                        this.quality = Qualities.P1080.value // Moved 'quality' into this block safely
                     }
                 )
             }
