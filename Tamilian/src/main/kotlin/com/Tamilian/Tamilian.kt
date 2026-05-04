@@ -34,7 +34,7 @@ class Tamilian : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val url = "$TMDB_API/movie/popular?api_key=$TMDB_KEY&language=ta-IN&page=$page"
+        val url = "$TMDB_API/discover/movie?api_key=$TMDB_KEY&with_original_language=ta&vote_count.gte=2&sort_by=primary_release_date.desc&page=$page"
         val response = app.get(url).parsedSafe<TmdbResponse>()
 
         val homeItems = response?.results?.mapNotNull { movie ->
@@ -50,11 +50,11 @@ class Tamilian : MainAPI() {
             }
         } ?: listOf()
 
-        return newHomePageResponse("Popular Tamil Movies", homeItems)
+        return newHomePageResponse("Latest Tamil Movies", homeItems)
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&language=ta-IN&query=$query"
+        val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&with_original_language=ta&query=$query"
         val response = app.get(url).parsedSafe<TmdbResponse>()
 
         return response?.results?.mapNotNull { movie ->
@@ -73,7 +73,7 @@ class Tamilian : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val tmdbId = url.substringAfterLast("/")
-        val reqUrl = "$TMDB_API/movie/$tmdbId?api_key=$TMDB_KEY&language=ta-IN"
+        val reqUrl = "$TMDB_API/movie/$tmdbId?api_key=$TMDB_KEY&with_original_language=ta"
         
         val details = app.get(reqUrl).parsedSafe<TmdbDetails>() ?: return null
 
