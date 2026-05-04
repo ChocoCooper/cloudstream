@@ -5,6 +5,7 @@ import com.lagradost.cloudstream3.HomePageResponse
 import com.lagradost.cloudstream3.LoadResponse
 import com.lagradost.cloudstream3.MainAPI
 import com.lagradost.cloudstream3.MainPageRequest
+import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
@@ -41,19 +42,39 @@ class Tamilian : MainAPI() {
             
             newMovieSearchResponse(
                 name = title,
-                url = id, // We pass the TMDB ID forward as the 'url'
+                url = "$mainUrl/$id", // Explicitly format to avoid Cloudstream auto-appending
                 type = TvType.Movie
             ) {
-                this.posterUrl = "https://image.tmdb.org/t/p/w500${movie.poster_path}"
+                // Safely handle null posters to prevent Coil 404 errors
+                this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
             }
         } ?: listOf()
 
         return newHomePageResponse("Popular Tamil Movies", homeItems)
     }
 
+    // ADDED: Search function to fix the NotImplementedError crash
+    override suspend fun search(query: String): List<SearchResponse> {
+        val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&language=ta-IN&query=$query"
+        val response = app.get(url).parsedSafe<TmdbResponse>()
+
+        return response?.results?.mapNotNull { movie ->
+            val title = movie.title ?: return@mapNotNull null
+            val id = movie.id?.toString() ?: return@mapNotNull null
+            
+            newMovieSearchResponse(
+                name = title,
+                url = "$mainUrl/$id",
+                type = TvType.Movie
+            ) {
+                this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+            }
+        } ?: emptyList()
+    }
+
     override suspend fun load(url: String): LoadResponse? {
-        // The 'url' passed here is the TMDB ID we set in getMainPage
-        val tmdbId = url 
+        // url is "https://embedojo.net/12345", so we extract just the "12345"
+        val tmdbId = url.substringAfterLast("/")
         val reqUrl = "$TMDB_API/movie/$tmdbId?api_key=$TMDB_KEY&language=ta-IN"
         
         val details = app.get(reqUrl).parsedSafe<TmdbDetails>() ?: return null
@@ -62,12 +83,11 @@ class Tamilian : MainAPI() {
             name = details.title ?: "",
             url = url,
             type = TvType.Movie,
-            dataUrl = tmdbId // Pass the TMDB ID forward to loadLinks
+            dataUrl = url 
         ) {
-            this.posterUrl = "https://image.tmdb.org/t/p/w500${details.poster_path}"
+            this.posterUrl = details.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
             this.plot = details.overview
             this.year = details.release_date?.split("-")?.firstOrNull()?.toIntOrNull()
-            // Removed 'rating' entirely to prevent deprecation errors
         }
     }
 
@@ -77,8 +97,8 @@ class Tamilian : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // 'data' contains the TMDB ID passed from the load() function
-        val tmdbId = data 
+        // Extract the ID again just in case
+        val tmdbId = data.substringAfterLast("/")
         
         val script = app.get("$HOST/tamil/tmdb/$tmdbId")
             .document.selectFirst("script:containsData(function(p,a,c,k,e,d))")
@@ -101,7 +121,7 @@ class Tamilian : MainAPI() {
                     ) {
                         this.referer = "$mainUrl/"
                         this.headers = headers
-                        this.quality = Qualities.P1080.value // Moved 'quality' into this block safely
+                        this.quality = Qualities.P1080.value 
                     }
                 )
             }
