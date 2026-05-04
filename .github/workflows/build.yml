@@ -1,5 +1,6 @@
 name: Build
 
+# https://docs.github.com/en/actions/learn-github-actions/workflow-syntax-for-github-actions#concurrency
 concurrency:
   group: "build"
   cancel-in-progress: true
@@ -7,6 +8,7 @@ concurrency:
 on:
   push:
     branches:
+      # choose your default branch
       - master
       - main
     paths-ignore:
@@ -16,31 +18,33 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # FIX 1: Removed 'path: "src"'. Your code will now be in the root directory.
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@master
+        with:
+          path: "src"
 
-      - name: Checkout builds branch
-        uses: actions/checkout@v4
+      - name: Checkout builds
+        uses: actions/checkout@master
         with:
           ref: "builds"
           path: "builds"
 
       - name: Clean old builds
-        run: rm -f $GITHUB_WORKSPACE/builds/*.cs3
+        run: rm $GITHUB_WORKSPACE/builds/*.cs3
 
-      # FIX 2: Updated to v4. v1 is deprecated and will fail.
       - name: Setup JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v1
         with:
           java-version: 21
-          distribution: 'temurin'
+          distribution: adopt
           cache: gradle
 
-      # Note: Removed setup-android. The ubuntu-latest runner already has the Android SDK installed!
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v2
 
       - name: Build Plugins
         run: |
+          cd $GITHUB_WORKSPACE/src
           chmod +x gradlew
           ./gradlew make makePluginsJson
           cp **/build/*.cs3 $GITHUB_WORKSPACE/builds
@@ -52,5 +56,5 @@ jobs:
           git config --local user.email "actions@github.com"
           git config --local user.name "GitHub Actions"
           git add .
-          git commit --amend -m "Build $GITHUB_SHA" || exit 0
+          git commit --amend -m "Build $GITHUB_SHA" || exit 0   # do not error if nothing to commit
           git push --force
