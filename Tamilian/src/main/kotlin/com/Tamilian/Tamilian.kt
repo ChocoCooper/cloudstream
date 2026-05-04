@@ -29,6 +29,7 @@ class Tamilian : MainAPI() {
     companion object {
         const val HOST = "https://embedojo.net"
         const val TMDB_API = "https://api.tmdb.org/3"
+        // Updated with your TMDB key
         const val TMDB_KEY = "fb7bb23f03b6994dafc674c074d01761" 
     }
 
@@ -42,10 +43,9 @@ class Tamilian : MainAPI() {
             
             newMovieSearchResponse(
                 name = title,
-                url = "$mainUrl/$id", // Explicitly format to avoid Cloudstream auto-appending
+                url = "$mainUrl/$id",
                 type = TvType.Movie
             ) {
-                // Safely handle null posters to prevent Coil 404 errors
                 this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
             }
         } ?: listOf()
@@ -53,7 +53,6 @@ class Tamilian : MainAPI() {
         return newHomePageResponse("Popular Tamil Movies", homeItems)
     }
 
-    // ADDED: Search function to fix the NotImplementedError crash
     override suspend fun search(query: String): List<SearchResponse> {
         val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&language=ta-IN&query=$query"
         val response = app.get(url).parsedSafe<TmdbResponse>()
@@ -73,7 +72,6 @@ class Tamilian : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        // url is "https://embedojo.net/12345", so we extract just the "12345"
         val tmdbId = url.substringAfterLast("/")
         val reqUrl = "$TMDB_API/movie/$tmdbId?api_key=$TMDB_KEY&language=ta-IN"
         
@@ -97,34 +95,44 @@ class Tamilian : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        // Extract the ID again just in case
         val tmdbId = data.substringAfterLast("/")
+        val pageUrl = "$HOST/tamil/tmdb/$tmdbId"
         
-        val script = app.get("$HOST/tamil/tmdb/$tmdbId")
+        val script = app.get(pageUrl)
             .document.selectFirst("script:containsData(function(p,a,c,k,e,d))")
             ?.data()?.let { getAndUnpack(it) }
 
-        val token = script?.substringAfter("FirePlayer(\"")?.substringBefore("\",")
-        val m3u8 = app.post("$HOST/player/index.php?data=$token&do=getVideo", headers = mapOf("X-Requested-With" to "XMLHttpRequest"))
+        val token = script?.substringAfter("FirePlayer(\"")?.substringBefore("\",") ?: return false
+        
+        // FIX: Create strict browser headers to bypass CDN blocking
+        val apiHeaders = mapOf(
+            "X-Requested-With" to "XMLHttpRequest",
+            "Referer" to pageUrl,
+            "Origin" to HOST,
+            "Accept" to "*/*",
+            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        )
+
+        val m3u8 = app.post("$HOST/player/index.php?data=$token&do=getVideo", headers = apiHeaders)
             .parsedSafe<VideoData>()
             
-        val headers = mapOf("Origin" to HOST)
+        val sourceUrl = m3u8?.videoSource ?: return false
         
-        m3u8?.let {
-            safeApiCall {
-                callback.invoke(
-                    newExtractorLink(
-                        name = name,
-                        source = name,
-                        url = it.videoSource,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = "$mainUrl/"
-                        this.headers = headers
-                        this.quality = Qualities.P1080.value 
-                    }
-                )
-            }
+        safeApiCall {
+            callback.invoke(
+                newExtractorLink(
+                    name = name,
+                    source = name,
+                    url = sourceUrl,
+                    // Treat .txt as .m3u8 implicitly
+                    type = ExtractorLinkType.M3U8 
+                ) {
+                    this.referer = pageUrl
+                    // FIX: Pass the strict headers directly to ExoPlayer
+                    this.headers = apiHeaders
+                    this.quality = Qualities.P1080.value 
+                }
+            )
         }
         return true
     }
@@ -150,6 +158,6 @@ class Tamilian : MainAPI() {
     )
 
     data class VideoData(
-        @JsonProperty("videoSource") val videoSource: String
+        @JsonProperty("videoSource") val videoSource: String?
     )
 }
