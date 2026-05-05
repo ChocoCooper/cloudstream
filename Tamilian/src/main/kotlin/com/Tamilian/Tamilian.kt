@@ -167,16 +167,24 @@ class Tamilian : MainAPI() {
             finalLink = match?.groupValues?.get(1)?.replace("\\", "")
         }
 
-        // --- STEP 4: Trigger the POST Request to extract the .m3u8 ---
+        // --- STEP 4: Session Cookies & HLS Extraction ---
         if (finalLink != null) {
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
+
+            // Fetch the iframe page to generate the necessary session cookies
+            val iframeRes = app.get(finalLink, headers = mapOf("Referer" to watchUrl))
+            
+            val sessionCookies = mutableMapOf<String, String>()
+            sessionCookies.putAll(iframeRes.cookies)
+            var cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
 
             val postHeaders = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to finalLink,
                 "Origin" to embedHost,
-                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8",
+                "Cookie" to cookieString
             )
 
             // Hit the /player/index.php endpoint
@@ -184,6 +192,9 @@ class Tamilian : MainAPI() {
                 "$embedHost/player/index.php?data=$token&do=getVideo",
                 headers = postHeaders
             )
+
+            sessionCookies.putAll(videoDataRes.cookies)
+            cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
 
             val parsedData = videoDataRes.parsedSafe<VideoData>()
             var sourceUrl = parsedData?.videoSource
@@ -193,7 +204,6 @@ class Tamilian : MainAPI() {
                 sourceUrl = match?.groupValues?.get(1)?.replace("\\", "")
             }
 
-            // Extract Subtitles if they exist
             parsedData?.tracks?.forEach { track ->
                 if (track.kind == "captions" && !track.file.isNullOrBlank()) {
                     subtitleCallback.invoke(
@@ -202,12 +212,12 @@ class Tamilian : MainAPI() {
                 }
             }
 
-            // Construct the final player headers
             val playerHeaders = mapOf(
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Referer" to finalLink,
                 "Origin" to embedHost,
-                "Accept" to "*/*"
+                "Accept" to "*/*",
+                "Cookie" to cookieString 
             )
 
             if (!sourceUrl.isNullOrBlank()) {
@@ -219,7 +229,7 @@ class Tamilian : MainAPI() {
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = finalLink
-                        this.headers = playerHeaders // This prevents ExoPlayer from crashing!
+                        this.headers = playerHeaders 
                         this.quality = Qualities.P1080.value
                     }
                 )
