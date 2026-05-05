@@ -17,6 +17,9 @@ import com.lagradost.cloudstream3.utils.ExtractorLink
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.newExtractorLink
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import java.util.Locale
 
 class Tamilian : MainAPI() {
@@ -25,6 +28,11 @@ class Tamilian : MainAPI() {
     override val hasMainPage = true
     override var lang = "ta"
     override val supportedTypes = setOf(TvType.Movie)
+
+    companion object {
+        private const val TMDB_API = "https://api.tmdb.org/3"
+        private const val TMDB_KEY = "fb7bb23f03b6994dafc674c074d01761" 
+    }
 
     // --- HELPER: Safely handles relative URLs ---
     private fun String.toAbsoluteUrl(): String {
@@ -43,27 +51,60 @@ class Tamilian : MainAPI() {
         }
     }
 
+    // --- HELPER: Fast TMDB Poster Fetcher ---
+    private suspend fun fetchTmdbPoster(title: String, fallbackPoster: String?): String? {
+        return try {
+            val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&query=$title"
+            val response = app.get(url).parsedSafe<TmdbSearchResponse>()
+            val posterPath = response?.results?.firstOrNull()?.poster_path
+            
+            if (!posterPath.isNullOrBlank()) {
+                "https://image.tmdb.org/t/p/w500$posterPath"
+            } else {
+                fallbackPoster
+            }
+        } catch (e: Exception) {
+            fallbackPoster
+        }
+    }
+
+    // --- HELPER: Data Class to hold extracted elements before TMDB parsing ---
+    private data class ScrapedMovie(val title: String, val url: String, val nativePoster: String?)
+
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home/").document
         
-        val movies = doc.select("a[href*='/movie/']").mapNotNull { element ->
+        // 1. Scrape the native site and deduplicate by exact Title
+        val scrapedMovies = doc.select("a[href*='/movie/']").mapNotNull { element ->
             val href = element.attr("href")
             if (href.contains("watching.html") || href.isBlank()) return@mapNotNull null
             
             val url = href.toAbsoluteUrl()
             val title = cleanTitleFromUrl(url)
             
+            // Fixed Native Poster Extraction: The site uses 'data-original' for lazy loading
             val img = element.selectFirst("img")
-            val poster = img?.attr("data-src")?.takeIf { it.isNotBlank() } ?: img?.attr("src")
+            val nativePoster = img?.attr("data-original")?.takeIf { it.isNotBlank() } 
+                ?: img?.attr("src")?.takeIf { !it.startsWith("data:image") }
 
-            newMovieSearchResponse(
-                name = title,
-                url = url,
-                type = TvType.Movie
-            ) {
-                this.posterUrl = poster?.toAbsoluteUrl()
-            }
-        }.distinctBy { it.url }
+            ScrapedMovie(title, url, nativePoster?.toAbsoluteUrl())
+        }.distinctBy { it.title } // Fixes the duplicate results issue!
+
+        // 2. Concurrently fetch high-quality TMDB posters for all results
+        val movies = coroutineScope {
+            scrapedMovies.map { movie ->
+                async {
+                    val finalPoster = fetchTmdbPoster(movie.title, movie.nativePoster)
+                    newMovieSearchResponse(
+                        name = movie.title,
+                        url = movie.url,
+                        type = TvType.Movie
+                    ) {
+                        this.posterUrl = finalPoster
+                    }
+                }
+            }.awaitAll()
+        }
 
         return newHomePageResponse(listOf(HomePageList("Latest Movies", movies)))
     }
@@ -71,7 +112,7 @@ class Tamilian : MainAPI() {
     override suspend fun search(query: String): List<SearchResponse> {
         val doc = app.get("$mainUrl/search/$query").document
         
-        return doc.select("a[href*='/movie/']").mapNotNull { element ->
+        val scrapedMovies = doc.select("a[href*='/movie/']").mapNotNull { element ->
             val href = element.attr("href")
             if (href.contains("watching.html") || href.isBlank()) return@mapNotNull null
             
@@ -79,16 +120,26 @@ class Tamilian : MainAPI() {
             val title = cleanTitleFromUrl(url)
             
             val img = element.selectFirst("img")
-            val poster = img?.attr("data-src")?.takeIf { it.isNotBlank() } ?: img?.attr("src")
+            val nativePoster = img?.attr("data-original")?.takeIf { it.isNotBlank() } 
+                ?: img?.attr("src")?.takeIf { !it.startsWith("data:image") }
 
-            newMovieSearchResponse(
-                name = title,
-                url = url,
-                type = TvType.Movie
-            ) {
-                this.posterUrl = poster?.toAbsoluteUrl()
-            }
-        }.distinctBy { it.url }
+            ScrapedMovie(title, url, nativePoster?.toAbsoluteUrl())
+        }.distinctBy { it.title } // Deduplicate search results
+
+        return coroutineScope {
+            scrapedMovies.map { movie ->
+                async {
+                    val finalPoster = fetchTmdbPoster(movie.title, movie.nativePoster)
+                    newMovieSearchResponse(
+                        name = movie.title,
+                        url = movie.url,
+                        type = TvType.Movie
+                    ) {
+                        this.posterUrl = finalPoster
+                    }
+                }
+            }.awaitAll()
+        }
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -100,7 +151,10 @@ class Tamilian : MainAPI() {
         val year = yearText?.split("-")?.firstOrNull()?.toIntOrNull()
         
         val styleAttr = doc.selectFirst(".mvic-thumb")?.attr("style")
-        val poster = styleAttr?.let { Regex("""url\((.*?)\)""").find(it)?.groupValues?.get(1) }
+        val nativePoster = styleAttr?.let { Regex("""url\((.*?)\)""").find(it)?.groupValues?.get(1) }?.toAbsoluteUrl()
+
+        // Fetch the TMDB poster for the details screen too
+        val finalPoster = fetchTmdbPoster(title, nativePoster)
 
         return newMovieLoadResponse(
             name = title,
@@ -108,7 +162,7 @@ class Tamilian : MainAPI() {
             type = TvType.Movie,
             dataUrl = url 
         ) {
-            this.posterUrl = poster?.toAbsoluteUrl()
+            this.posterUrl = finalPoster
             this.plot = plot
             this.year = year
         }
@@ -171,8 +225,6 @@ class Tamilian : MainAPI() {
         if (finalLink != null) {
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
-
-            // Removed the `app.get` cookie fetch that was causing the SocketTimeoutException.
             
             val postHeaders = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
@@ -204,7 +256,6 @@ class Tamilian : MainAPI() {
                 }
             }
 
-            // THESE are the magic headers that stop ExoPlayer from crashing!
             val playerHeaders = mapOf(
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Referer" to finalLink,
@@ -245,5 +296,13 @@ class Tamilian : MainAPI() {
     data class VideoData(
         @JsonProperty("videoSource") val videoSource: String?,
         @JsonProperty("tracks") val tracks: List<Track>?
+    )
+
+    data class TmdbSearchResponse(
+        @JsonProperty("results") val results: List<TmdbMovie>?
+    )
+
+    data class TmdbMovie(
+        @JsonProperty("poster_path") val poster_path: String?
     )
 }
