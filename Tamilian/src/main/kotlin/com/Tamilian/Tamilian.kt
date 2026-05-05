@@ -37,42 +37,41 @@ class Tamilian : MainAPI() {
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val latestUrl = "$TMDB_API/discover/movie?api_key=$TMDB_KEY&with_original_language=ta&vote_count.gte=2&sort_by=primary_release_date.desc&page=$page"
-        val dubbedUrl = "$TMDB_API/discover/movie?api_key=$TMDB_KEY&with_original_language=en&with_spoken_languages=ta&sort_by=popularity.desc&page=$page"
+        if (page > 1) return newHomePageResponse(emptyList())
 
-        val latestResponse = app.get(latestUrl).parsedSafe<TmdbResponse>()
-        val dubbedResponse = app.get(dubbedUrl).parsedSafe<TmdbResponse>()
+        // Updated with your scraped working IDs
+        val previewIds = listOf("1137861", "69537", "927342", "949229", "1136423", "263471", "833324", "370076", "148284", "281394")
+        val tamilIds = listOf("1211999", "280951", "949380", "1351991", "1114668", "1323267", "1386625", "922360", "622792", "1311073")
+        val dubbedIds = listOf("1579", "157336", "7451", "502356", "24428", "299536", "278", "634649", "238", "299534")
 
-        val latestItems = latestResponse?.results?.mapNotNull { movie ->
-            val title = movie.title ?: return@mapNotNull null
-            val id = movie.id?.toString() ?: return@mapNotNull null
-            
-            newMovieSearchResponse(
-                name = title,
-                url = "$mainUrl/$id",
-                type = TvType.Movie
-            ) {
-                this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+        suspend fun getMoviesFromIds(ids: List<String>): List<SearchResponse> {
+            return coroutineScope {
+                ids.map { id ->
+                    async {
+                        val reqUrl = "$TMDB_API/movie/$id?api_key=$TMDB_KEY&language=ta-IN"
+                        val details = app.get(reqUrl).parsedSafe<TmdbDetails>() ?: return@async null
+                        
+                        newMovieSearchResponse(
+                            name = details.title ?: "",
+                            url = "$mainUrl/$id",
+                            type = TvType.Movie
+                        ) {
+                            this.posterUrl = details.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
+                        }
+                    }
+                }.awaitAll().filterNotNull()
             }
-        } ?: listOf()
+        }
 
-        val dubbedItems = dubbedResponse?.results?.mapNotNull { movie ->
-            val title = movie.title ?: return@mapNotNull null
-            val id = movie.id?.toString() ?: return@mapNotNull null
-            
-            newMovieSearchResponse(
-                name = title,
-                url = "$mainUrl/$id",
-                type = TvType.Movie
-            ) {
-                this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
-            }
-        } ?: listOf()
+        val previewMovies = getMoviesFromIds(previewIds)
+        val tamilMovies = getMoviesFromIds(tamilIds)
+        val dubbedMovies = getMoviesFromIds(dubbedIds)
 
         return newHomePageResponse(
             listOf(
-                HomePageList("Latest Tamil Movies", latestItems),
-                HomePageList("Tamil Dubbed Movies", dubbedItems)
+                HomePageList("Featured Previews", previewMovies, isHorizontalImages = true),
+                HomePageList("Latest Tamil Movies", tamilMovies),
+                HomePageList("Tamil Dubbed Movies", dubbedMovies)
             )
         )
     }
@@ -81,17 +80,15 @@ class Tamilian : MainAPI() {
         val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&with_original_language=ta&query=$query"
         val response = app.get(url).parsedSafe<TmdbResponse>()
 
-        // Using coroutineScope to run availability checks in parallel
+        // Search still uses background checks because the user input is dynamic
         return coroutineScope {
-            response?.results?.map { movie ->
+            response?.results?.take(15)?.map { movie ->
                 async {
                     val title = movie.title ?: return@async null
                     val id = movie.id?.toString() ?: return@async null
                     
-                    // Check if Embedojo actually has this movie
                     val isAvailable = try {
                         val res = app.get("$HOST/tamil/tmdb/$id")
-                        // If the page contains the player script, it's available
                         res.text.contains("FirePlayer")
                     } catch (e: Exception) {
                         false
