@@ -30,7 +30,6 @@ class Tamilian : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie)
 
     companion object {
-        // A single, unified User-Agent prevents the server from flagging us as a bot
         private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         private const val TMDB_API = "https://api.tmdb.org/3"
         private val TMDB_KEYS = listOf(
@@ -42,7 +41,6 @@ class Tamilian : MainAPI() {
         )
     }
 
-    // --- HELPER: Safely handles relative URLs ---
     private fun String.toAbsoluteUrl(): String {
         if (this.isBlank()) return ""
         if (this.startsWith("http")) return this
@@ -50,7 +48,6 @@ class Tamilian : MainAPI() {
         return if (this.startsWith("/")) "$mainUrl$this" else "$mainUrl/$this"
     }
 
-    // --- HELPER: Cleans "the-batman-d3d9446" into "The Batman" ---
     private fun cleanTitleFromUrl(url: String): String {
         val slug = url.trimEnd('/').split("/").last()
         val withoutId = slug.replace(Regex("-[a-f0-9]{7,}\$"), "")
@@ -59,7 +56,6 @@ class Tamilian : MainAPI() {
         }
     }
 
-    // --- HELPER: Smart Multi-Key TMDB Fetcher ---
     private suspend fun fetchTmdbPoster(title: String, year: Int?, fallbackPoster: String?): String? {
         for (key in TMDB_KEYS) {
             try {
@@ -258,21 +254,30 @@ class Tamilian : MainAPI() {
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
             
-            // WE REMOVED THE CLOUDFLARE TRAP HERE!
+            // 1. Generate the session cookie to pass the bot check
+            val iframeRes = app.get(finalLink, headers = mapOf("Referer" to watchUrl, "User-Agent" to USER_AGENT))
+            val sessionCookies = mutableMapOf<String, String>()
+            sessionCookies.putAll(iframeRes.cookies)
+            var cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
 
             val postHeaders = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to finalLink,
                 "Origin" to embedHost,
                 "User-Agent" to USER_AGENT,
+                "Cookie" to cookieString,
                 "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
             )
 
-            // Hit the /player/index.php endpoint
+            // 2. Hit the /player/index.php endpoint
             val videoDataRes = app.post(
                 "$embedHost/player/index.php?data=$token&do=getVideo",
                 headers = postHeaders
             )
+
+            // 3. Update cookies with any new tokens provided by the POST request
+            sessionCookies.putAll(videoDataRes.cookies)
+            cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
 
             val parsedData = videoDataRes.parsedSafe<VideoData>()
             var sourceUrl = parsedData?.videoSource
@@ -290,14 +295,17 @@ class Tamilian : MainAPI() {
                 }
             }
 
-            if (!sourceUrl.isNullOrBlank()) {
-                // THE ANTI-404 FIX: We lock the referer to the root domain so the CDN doesn't block the video
-                val playerHeaders = mapOf(
-                    "User-Agent" to USER_AGENT,
-                    "Referer" to "$embedHost/", 
-                    "Origin" to embedHost
-                )
+            // --- THE GOLDEN COMBO ---
+            // We lock the referer to the root domain (fixes 404) AND provide the Cookie (fixes HTML parser crash)
+            val playerHeaders = mapOf(
+                "User-Agent" to USER_AGENT,
+                "Referer" to "$embedHost/", 
+                "Origin" to embedHost,
+                "Accept" to "*/*",
+                "Cookie" to cookieString 
+            )
 
+            if (!sourceUrl.isNullOrBlank()) {
                 callback.invoke(
                     newExtractorLink(
                         name = "Tamilian HD",
