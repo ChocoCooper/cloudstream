@@ -33,7 +33,6 @@ class Tamilian : MainAPI() {
         // A single, unified User-Agent prevents the server from flagging us as a bot
         private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         private const val TMDB_API = "https://api.tmdb.org/3"
-        // List of fallback keys
         private val TMDB_KEYS = listOf(
             "fb7bb23f03b6994dafc674c074d01761",
             "e55425032d3d0f371fc776f302e7c09b",
@@ -67,7 +66,6 @@ class Tamilian : MainAPI() {
                 val baseUrl = "$TMDB_API/search/movie?api_key=$key&query=$title"
                 var results = emptyList<TmdbMovie>()
 
-                // 1. Try Exact Year Match first
                 if (year != null) {
                     val yearRes = app.get("$baseUrl&primary_release_year=$year").parsedSafe<TmdbSearchResponse>()
                     if (yearRes?.results?.isNotEmpty() == true) {
@@ -75,14 +73,12 @@ class Tamilian : MainAPI() {
                     }
                 }
                 
-                // 2. Fallback: If exact year failed, search without year constraint
                 if (results.isEmpty()) {
                     val genericRes = app.get(baseUrl).parsedSafe<TmdbSearchResponse>()
                     results = genericRes?.results ?: emptyList()
                 }
 
                 if (results.isNotEmpty()) {
-                    // Prioritize Tamil ("ta") movies over other languages
                     val bestMatch = results.firstOrNull { it.original_language == "ta" } ?: results.first()
                     val posterPath = bestMatch.poster_path
                     
@@ -90,10 +86,9 @@ class Tamilian : MainAPI() {
                         return "https://image.tmdb.org/t/p/w500$posterPath"
                     }
                 }
-                break // Success, but no poster found. Stop wasting keys.
-                
+                break 
             } catch (e: Exception) {
-                continue // Key failed, try the next one
+                continue 
             }
         }
         return fallbackPoster
@@ -136,7 +131,6 @@ class Tamilian : MainAPI() {
                 }
             }.awaitAll()
         }.distinctBy { 
-            // Removes duplicates pointing to the same TMDB entity
             if (it.posterUrl?.contains("tmdb.org") == true) it.posterUrl else it.url 
         }
 
@@ -218,7 +212,6 @@ class Tamilian : MainAPI() {
         val watchUrl = if (data.endsWith("/")) "${data}watching.html" else "$data/watching.html"
         val baseHeaders = mapOf("Referer" to data, "User-Agent" to USER_AGENT)
         
-        // --- STEP 1: Get the Internal Movie ID ---
         val watchRes = app.get(watchUrl, headers = baseHeaders).text
         val movieIdMatch = Regex("""movie\s*=\s*\{[^}]*id:\s*"(\d+)"""").find(watchRes)
         val movieId = movieIdMatch?.groupValues?.get(1) ?: return false
@@ -229,7 +222,6 @@ class Tamilian : MainAPI() {
             "User-Agent" to USER_AGENT
         )
 
-        // --- STEP 2: Fetch the Hidden Server Buttons ---
         val serverApiUrl = "$mainUrl/ajax/movie/episode/servers/${movieId}_1_full"
         val servRes = app.get(serverApiUrl, headers = ajaxHeaders)
         if (!servRes.isSuccessful) return false
@@ -250,7 +242,6 @@ class Tamilian : MainAPI() {
             cleanDataId
         }
 
-        // --- STEP 3: Fetch the Embed Link ---
         val sourcesUrl = "$mainUrl/ajax/movie/episode/server/sources/$fullDataId"
         val sourceRes = app.get(sourcesUrl, headers = ajaxHeaders)
         if (!sourceRes.isSuccessful) return false
@@ -263,24 +254,17 @@ class Tamilian : MainAPI() {
             finalLink = match?.groupValues?.get(1)?.replace("\\", "")
         }
 
-        // --- STEP 4: Session Cookies & POST ---
         if (finalLink != null) {
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
             
-            // CRITICAL: Visit the iframe link first to generate Cloudflare/Session cookies
-            val iframeRes = app.get(finalLink, headers = mapOf("Referer" to watchUrl, "User-Agent" to USER_AGENT))
-            
-            val sessionCookies = mutableMapOf<String, String>()
-            sessionCookies.putAll(iframeRes.cookies)
-            val cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+            // WE REMOVED THE CLOUDFLARE TRAP HERE!
 
             val postHeaders = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to finalLink,
                 "Origin" to embedHost,
                 "User-Agent" to USER_AGENT,
-                "Cookie" to cookieString,
                 "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
             )
 
@@ -306,20 +290,14 @@ class Tamilian : MainAPI() {
                 }
             }
 
-            // --- THE ANTI-404 FIX ---
-            // DO NOT send the cookie to the CDN! Only send standard Chrome fetch headers.
-            val playerHeaders = mapOf(
-                "User-Agent" to USER_AGENT,
-                "Referer" to finalLink, 
-                "Origin" to embedHost,
-                "Accept" to "*/*",
-                "Accept-Language" to "en-US,en;q=0.9",
-                "Sec-Fetch-Dest" to "empty",
-                "Sec-Fetch-Mode" to "cors",
-                "Sec-Fetch-Site" to "cross-site"
-            )
-
             if (!sourceUrl.isNullOrBlank()) {
+                // THE ANTI-404 FIX: We lock the referer to the root domain so the CDN doesn't block the video
+                val playerHeaders = mapOf(
+                    "User-Agent" to USER_AGENT,
+                    "Referer" to "$embedHost/", 
+                    "Origin" to embedHost
+                )
+
                 callback.invoke(
                     newExtractorLink(
                         name = "Tamilian HD",
@@ -327,7 +305,7 @@ class Tamilian : MainAPI() {
                         url = sourceUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        this.referer = finalLink
+                        this.referer = "$embedHost/" 
                         this.headers = playerHeaders 
                         this.quality = Qualities.P1080.value
                     }
