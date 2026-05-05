@@ -33,6 +33,7 @@ class Tamilian : MainAPI() {
         // A single, unified User-Agent prevents the server from flagging us as a bot
         private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         private const val TMDB_API = "https://api.tmdb.org/3"
+        // List of fallback keys
         private val TMDB_KEYS = listOf(
             "fb7bb23f03b6994dafc674c074d01761",
             "e55425032d3d0f371fc776f302e7c09b",
@@ -262,12 +263,12 @@ class Tamilian : MainAPI() {
             finalLink = match?.groupValues?.get(1)?.replace("\\", "")
         }
 
-        // --- STEP 4: Session Cookies & POST ---
+        // --- STEP 4: Establish Session & POST ---
         if (finalLink != null) {
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
             
-            // Generate the session cookie to pass the bot check
+            // CRITICAL: Visit the iframe link first to generate Cloudflare/Session cookies
             val iframeRes = app.get(finalLink, headers = mapOf("Referer" to watchUrl, "User-Agent" to USER_AGENT))
             val sessionCookies = mutableMapOf<String, String>()
             sessionCookies.putAll(iframeRes.cookies)
@@ -288,6 +289,10 @@ class Tamilian : MainAPI() {
                 headers = postHeaders
             )
 
+            // Merge any new cookies returned by the POST request
+            sessionCookies.putAll(videoDataRes.cookies)
+            cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+
             val parsedData = videoDataRes.parsedSafe<VideoData>()
             var sourceUrl = parsedData?.videoSource
 
@@ -304,14 +309,19 @@ class Tamilian : MainAPI() {
                 }
             }
 
-            // --- THE 404 FIX ---
-            // The CDN will 404 if it receives cookies or a long Referer path.
-            // We strip the cookie and force the Referer to be the exact root domain.
+            // --- THE ULTIMATE ANTI-404 DISGUISE ---
+            // These exact headers trick Cloudflare into thinking ExoPlayer is a real Chrome browser.
             val playerHeaders = mapOf(
                 "User-Agent" to USER_AGENT,
-                "Referer" to "$embedHost/", 
+                "Referer" to finalLink, 
                 "Origin" to embedHost,
-                "Accept" to "*/*"
+                "Accept" to "*/*",
+                "Accept-Language" to "en-US,en;q=0.9",
+                "Connection" to "keep-alive",
+                "Sec-Fetch-Dest" to "empty",
+                "Sec-Fetch-Mode" to "cors",
+                "Sec-Fetch-Site" to "cross-site",
+                "Cookie" to cookieString 
             )
 
             if (!sourceUrl.isNullOrBlank()) {
@@ -322,7 +332,7 @@ class Tamilian : MainAPI() {
                         url = sourceUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
-                        this.referer = "$embedHost/" 
+                        this.referer = finalLink
                         this.headers = playerHeaders 
                         this.quality = Qualities.P1080.value
                     }
