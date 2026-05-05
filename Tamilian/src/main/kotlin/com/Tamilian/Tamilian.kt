@@ -68,13 +68,12 @@ class Tamilian : MainAPI() {
         }
     }
 
-    // --- HELPER: Data Class to hold extracted elements before TMDB parsing ---
+    // Data Class to hold extracted elements before TMDB parsing
     private data class ScrapedMovie(val title: String, val url: String, val nativePoster: String?)
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home/").document
         
-        // 1. Scrape the native site and deduplicate by exact Title
         val scrapedMovies = doc.select("a[href*='/movie/']").mapNotNull { element ->
             val href = element.attr("href")
             if (href.contains("watching.html") || href.isBlank()) return@mapNotNull null
@@ -82,15 +81,13 @@ class Tamilian : MainAPI() {
             val url = href.toAbsoluteUrl()
             val title = cleanTitleFromUrl(url)
             
-            // Fixed Native Poster Extraction: The site uses 'data-original' for lazy loading
             val img = element.selectFirst("img")
             val nativePoster = img?.attr("data-original")?.takeIf { it.isNotBlank() } 
                 ?: img?.attr("src")?.takeIf { !it.startsWith("data:image") }
 
             ScrapedMovie(title, url, nativePoster?.toAbsoluteUrl())
-        }.distinctBy { it.title } // Fixes the duplicate results issue!
+        }.distinctBy { it.title }
 
-        // 2. Concurrently fetch high-quality TMDB posters for all results
         val movies = coroutineScope {
             scrapedMovies.map { movie ->
                 async {
@@ -104,6 +101,9 @@ class Tamilian : MainAPI() {
                     }
                 }
             }.awaitAll()
+        }.distinctBy { 
+            // THE MAGIC FIX: Deduplicate by TMDB poster to filter out alternate naming formats
+            if (it.posterUrl?.contains("tmdb.org") == true) it.posterUrl else it.url 
         }
 
         return newHomePageResponse(listOf(HomePageList("Latest Movies", movies)))
@@ -124,9 +124,9 @@ class Tamilian : MainAPI() {
                 ?: img?.attr("src")?.takeIf { !it.startsWith("data:image") }
 
             ScrapedMovie(title, url, nativePoster?.toAbsoluteUrl())
-        }.distinctBy { it.title } // Deduplicate search results
+        }.distinctBy { it.title }
 
-        return coroutineScope {
+        val movies = coroutineScope {
             scrapedMovies.map { movie ->
                 async {
                     val finalPoster = fetchTmdbPoster(movie.title, movie.nativePoster)
@@ -139,7 +139,11 @@ class Tamilian : MainAPI() {
                     }
                 }
             }.awaitAll()
+        }.distinctBy { 
+            if (it.posterUrl?.contains("tmdb.org") == true) it.posterUrl else it.url 
         }
+
+        return movies
     }
 
     override suspend fun load(url: String): LoadResponse? {
@@ -153,7 +157,6 @@ class Tamilian : MainAPI() {
         val styleAttr = doc.selectFirst(".mvic-thumb")?.attr("style")
         val nativePoster = styleAttr?.let { Regex("""url\((.*?)\)""").find(it)?.groupValues?.get(1) }?.toAbsoluteUrl()
 
-        // Fetch the TMDB poster for the details screen too
         val finalPoster = fetchTmdbPoster(title, nativePoster)
 
         return newMovieLoadResponse(
@@ -221,7 +224,7 @@ class Tamilian : MainAPI() {
             finalLink = match?.groupValues?.get(1)?.replace("\\", "")
         }
 
-        // --- STEP 4: Direct API POST (No Timeout Trap!) ---
+        // --- STEP 4: Direct API POST (Timeout-Proof) ---
         if (finalLink != null) {
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
@@ -248,6 +251,7 @@ class Tamilian : MainAPI() {
                 sourceUrl = match?.groupValues?.get(1)?.replace("\\", "")
             }
 
+            // Extract Captions
             parsedData?.tracks?.forEach { track ->
                 if (track.kind == "captions" && !track.file.isNullOrBlank()) {
                     subtitleCallback.invoke(
@@ -256,6 +260,7 @@ class Tamilian : MainAPI() {
                 }
             }
 
+            // Anti-crash headers for ExoPlayer
             val playerHeaders = mapOf(
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Referer" to finalLink,
