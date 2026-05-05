@@ -141,7 +141,6 @@ class Tamilian : MainAPI() {
         val serverBtns = servRes.document.select("a[data-id]")
         if (serverBtns.isEmpty()) return false
 
-        // Safely extract the MegaCloud button
         val targetBtn = serverBtns.firstOrNull { it.text().contains("MegaCloud", true) } 
             ?: serverBtns.firstOrNull() 
             ?: return false
@@ -170,7 +169,6 @@ class Tamilian : MainAPI() {
 
         // --- STEP 4: Trigger the POST Request to extract the .m3u8 ---
         if (finalLink != null) {
-            // The token is the very last part of the URL (e.g., /video/62275c18...)
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
 
@@ -181,29 +179,47 @@ class Tamilian : MainAPI() {
                 "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
             )
 
-            // Hit the /player/index.php endpoint directly like you found in DevTools
+            // Hit the /player/index.php endpoint
             val videoDataRes = app.post(
                 "$embedHost/player/index.php?data=$token&do=getVideo",
                 headers = postHeaders
             )
 
-            var sourceUrl = videoDataRes.parsedSafe<VideoData>()?.videoSource
+            val parsedData = videoDataRes.parsedSafe<VideoData>()
+            var sourceUrl = parsedData?.videoSource
 
-            // Fallback Regex if parsedSafe JSON mapping fails
             if (sourceUrl.isNullOrBlank()) {
                 val match = Regex(""""videoSource"\s*:\s*"([^"]+)"""").find(videoDataRes.text)
                 sourceUrl = match?.groupValues?.get(1)?.replace("\\", "")
             }
 
+            // Extract Subtitles if they exist
+            parsedData?.tracks?.forEach { track ->
+                if (track.kind == "captions" && !track.file.isNullOrBlank()) {
+                    subtitleCallback.invoke(
+                        SubtitleFile(track.label ?: "Subtitles", track.file)
+                    )
+                }
+            }
+
+            // Construct the final player headers
+            val playerHeaders = mapOf(
+                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Referer" to finalLink,
+                "Origin" to embedHost,
+                "Accept" to "*/*"
+            )
+
             if (!sourceUrl.isNullOrBlank()) {
                 callback.invoke(
                     newExtractorLink(
-                        name = "MegaCloud",
-                        source = "MegaCloud",
+                        name = "Tamilian HD",
+                        source = "Tamilian",
                         url = sourceUrl,
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = finalLink
+                        this.headers = playerHeaders // This prevents ExoPlayer from crashing!
                         this.quality = Qualities.P1080.value
                     }
                 )
@@ -218,7 +234,14 @@ class Tamilian : MainAPI() {
         @JsonProperty("link") val link: String?
     )
 
+    data class Track(
+        @JsonProperty("file") val file: String?,
+        @JsonProperty("label") val label: String?,
+        @JsonProperty("kind") val kind: String?
+    )
+
     data class VideoData(
-        @JsonProperty("videoSource") val videoSource: String?
+        @JsonProperty("videoSource") val videoSource: String?,
+        @JsonProperty("tracks") val tracks: List<Track>?
     )
 }
