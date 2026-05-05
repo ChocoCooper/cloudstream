@@ -14,7 +14,9 @@ import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import java.util.Locale
 
 class Tamilian : MainAPI() {
@@ -24,7 +26,7 @@ class Tamilian : MainAPI() {
     override var lang = "ta"
     override val supportedTypes = setOf(TvType.Movie)
 
-    // --- HELPER: Safely handles relative URLs without relying on the Cloudstream base API ---
+    // --- HELPER: Safely handles relative URLs ---
     private fun String.toAbsoluteUrl(): String {
         if (this.isBlank()) return ""
         if (this.startsWith("http")) return this
@@ -63,9 +65,7 @@ class Tamilian : MainAPI() {
             }
         }.distinctBy { it.url }
 
-        return newHomePageResponse(
-            listOf(HomePageList("Latest Movies", movies))
-        )
+        return newHomePageResponse(listOf(HomePageList("Latest Movies", movies)))
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
@@ -99,7 +99,6 @@ class Tamilian : MainAPI() {
         val yearText = doc.selectFirst(".mvici-right p:contains(Release:) a")?.text()
         val year = yearText?.split("-")?.firstOrNull()?.toIntOrNull()
         
-        // Extract background image style "url(...)"
         val styleAttr = doc.selectFirst(".mvic-thumb")?.attr("style")
         val poster = styleAttr?.let { Regex("""url\((.*?)\)""").find(it)?.groupValues?.get(1) }
 
@@ -142,12 +141,11 @@ class Tamilian : MainAPI() {
         val serverBtns = servRes.document.select("a[data-id]")
         if (serverBtns.isEmpty()) return false
 
-        // FIX: The ?: return false operator guarantees targetBtn is NOT NULL for the .attr() calls below
+        // Safely extract the MegaCloud button
         val targetBtn = serverBtns.firstOrNull { it.text().contains("MegaCloud", true) } 
             ?: serverBtns.firstOrNull() 
             ?: return false
         
-        // Strip out any garbage quotes/slashes added by the server
         val cleanDataId = targetBtn.attr("data-id").replace("\"", "").replace("\\", "").replace("'", "")
         val cleanDataName = targetBtn.attr("data-name").replace("\"", "").replace("\\", "").replace("'", "")
 
@@ -157,33 +155,60 @@ class Tamilian : MainAPI() {
             cleanDataId
         }
 
-        // --- STEP 3: Fetch the Final Player Link ---
+        // --- STEP 3: Fetch the Embed Link ---
         val sourcesUrl = "$mainUrl/ajax/movie/episode/server/sources/$fullDataId"
         val sourceRes = app.get(sourcesUrl, headers = ajaxHeaders)
         if (!sourceRes.isSuccessful) return false
 
         var finalLink: String? = null
+        try { finalLink = sourceRes.parsedSafe<LinkResponse>()?.link } catch (e: Exception) {}
 
-        // Try JSON parsing first
-        try {
-            finalLink = sourceRes.parsedSafe<LinkResponse>()?.link
-        } catch (e: Exception) {}
-
-        // Fallback: Regex scan the raw text for the Megacloud/Embedojo URL
         if (finalLink == null) {
             val match = Regex("""(https?://(?:embedojo\.net|megacloud\.[a-z]+)/[^\s"\'<>\\]+)""").find(sourceRes.text)
             finalLink = match?.groupValues?.get(1)?.replace("\\", "")
         }
 
-        // --- STEP 4: Handoff to Cloudstream ---
+        // --- STEP 4: Trigger the POST Request to extract the .m3u8 ---
         if (finalLink != null) {
-            loadExtractor(
-                url = finalLink, 
-                referer = watchUrl, 
-                subtitleCallback = subtitleCallback, 
-                callback = callback
+            // The token is the very last part of the URL (e.g., /video/62275c18...)
+            val token = finalLink.substringAfterLast("/")
+            val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
+
+            val postHeaders = mapOf(
+                "X-Requested-With" to "XMLHttpRequest",
+                "Referer" to finalLink,
+                "Origin" to embedHost,
+                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
             )
-            return true
+
+            // Hit the /player/index.php endpoint directly like you found in DevTools
+            val videoDataRes = app.post(
+                "$embedHost/player/index.php?data=$token&do=getVideo",
+                headers = postHeaders
+            )
+
+            var sourceUrl = videoDataRes.parsedSafe<VideoData>()?.videoSource
+
+            // Fallback Regex if parsedSafe JSON mapping fails
+            if (sourceUrl.isNullOrBlank()) {
+                val match = Regex(""""videoSource"\s*:\s*"([^"]+)"""").find(videoDataRes.text)
+                sourceUrl = match?.groupValues?.get(1)?.replace("\\", "")
+            }
+
+            if (!sourceUrl.isNullOrBlank()) {
+                callback.invoke(
+                    newExtractorLink(
+                        name = "MegaCloud",
+                        source = "MegaCloud",
+                        url = sourceUrl,
+                        type = ExtractorLinkType.M3U8
+                    ) {
+                        this.referer = finalLink
+                        this.quality = Qualities.P1080.value
+                    }
+                )
+                return true
+            }
         }
 
         return false
@@ -191,5 +216,9 @@ class Tamilian : MainAPI() {
 
     data class LinkResponse(
         @JsonProperty("link") val link: String?
+    )
+
+    data class VideoData(
+        @JsonProperty("videoSource") val videoSource: String?
     )
 }
