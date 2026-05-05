@@ -10,118 +10,100 @@ import com.lagradost.cloudstream3.SearchResponse
 import com.lagradost.cloudstream3.SubtitleFile
 import com.lagradost.cloudstream3.TvType
 import com.lagradost.cloudstream3.app
-import com.lagradost.cloudstream3.mvvm.safeApiCall
 import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.getAndUnpack
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
+import com.lagradost.cloudstream3.utils.loadExtractor
+import java.util.Locale
 
 class Tamilian : MainAPI() {
     override var name = "Tamilian"
-    override var mainUrl = HOST
+    override var mainUrl = "https://tamilian.io"
     override val hasMainPage = true
     override var lang = "ta"
     override val supportedTypes = setOf(TvType.Movie)
 
-    companion object {
-        const val HOST = "https://embedojo.net"
-        const val TMDB_API = "https://api.tmdb.org/3"
-        const val TMDB_KEY = "fb7bb23f03b6994dafc674c074d01761" 
+    // --- HELPER: Cleans "the-batman-d3d9446" into "The Batman" ---
+    private fun cleanTitleFromUrl(url: String): String {
+        val slug = url.trimEnd('/').split("/").last()
+        val withoutId = slug.replace(Regex("-[a-f0-9]{7,}\$"), "")
+        return withoutId.replace("-", " ").split(" ").joinToString(" ") { 
+            it.replaceFirstChar { char -> if (char.isLowerCase()) char.titlecase(Locale.ROOT) else char.toString() } 
+        }
     }
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        if (page > 1) return newHomePageResponse(emptyList())
+        val doc = app.get("$mainUrl/home/").document
+        
+        val movies = doc.select("a[href*='/movie/']").mapNotNull { element ->
+            val href = element.attr("href")
+            if (href.contains("watching.html") || href.isBlank()) return@mapNotNull null
+            
+            val url = fixUrl(href)
+            val title = cleanTitleFromUrl(url)
+            
+            val img = element.selectFirst("img")
+            val poster = img?.attr("data-src")?.takeIf { it.isNotBlank() } ?: img?.attr("src")
 
-        val tamilIds = listOf("1211999", "280951", "949380", "1351991", "1114668", "1323267", "1386625", "922360", "622792", "1311073")
-        val dubbedIds = listOf("1579", "157336", "7451", "502356", "24428", "299536", "278", "634649", "238", "299534")
-
-        suspend fun getMoviesFromIds(ids: List<String>): List<SearchResponse> {
-            return coroutineScope {
-                ids.map { id ->
-                    async {
-                        // Removed language parameter to default to English text
-                        val reqUrl = "$TMDB_API/movie/$id?api_key=$TMDB_KEY"
-                        val details = app.get(reqUrl).parsedSafe<TmdbDetails>() ?: return@async null
-                        
-                        newMovieSearchResponse(
-                            name = details.title ?: "",
-                            url = "$mainUrl/$id",
-                            type = TvType.Movie
-                        ) {
-                            this.posterUrl = details.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
-                        }
-                    }
-                }.awaitAll().filterNotNull()
+            newMovieSearchResponse(
+                name = title,
+                url = url,
+                type = TvType.Movie
+            ) {
+                this.posterUrl = poster?.let { fixUrl(it) }
             }
-        }
-
-        val tamilMovies = getMoviesFromIds(tamilIds)
-        val dubbedMovies = getMoviesFromIds(dubbedIds)
+        }.distinctBy { it.url }
 
         return newHomePageResponse(
-            listOf(
-                HomePageList("Latest Tamil Movies", tamilMovies),
-                HomePageList("Tamil Dubbed Movies", dubbedMovies)
-            )
+            listOf(HomePageList("Latest Movies", movies))
         )
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&with_original_language=ta&query=$query"
-        val response = app.get(url).parsedSafe<TmdbResponse>()
+        val doc = app.get("$mainUrl/search/$query").document
+        
+        return doc.select("a[href*='/movie/']").mapNotNull { element ->
+            val href = element.attr("href")
+            if (href.contains("watching.html") || href.isBlank()) return@mapNotNull null
+            
+            val url = fixUrl(href)
+            val title = cleanTitleFromUrl(url)
+            
+            val img = element.selectFirst("img")
+            val poster = img?.attr("data-src")?.takeIf { it.isNotBlank() } ?: img?.attr("src")
 
-        return coroutineScope {
-            response?.results?.take(15)?.map { movie ->
-                async {
-                    val title = movie.title ?: return@async null
-                    val id = movie.id?.toString() ?: return@async null
-                    
-                    val isAvailable = try {
-                        val res = app.get("$HOST/tamil/tmdb/$id")
-                        res.text.contains("FirePlayer")
-                    } catch (e: Exception) {
-                        false
-                    }
-
-                    if (isAvailable) {
-                        newMovieSearchResponse(
-                            name = title,
-                            url = "$mainUrl/$id",
-                            type = TvType.Movie
-                        ) {
-                            this.posterUrl = movie.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
-                        }
-                    } else {
-                        null
-                    }
-                }
-            }?.awaitAll()?.filterNotNull() ?: emptyList()
-        }
+            newMovieSearchResponse(
+                name = title,
+                url = url,
+                type = TvType.Movie
+            ) {
+                this.posterUrl = poster?.let { fixUrl(it) }
+            }
+        }.distinctBy { it.url }
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val tmdbId = url.substringAfterLast("/")
-        // Removed unnecessary parameters for direct ID lookups
-        val reqUrl = "$TMDB_API/movie/$tmdbId?api_key=$TMDB_KEY"
+        val doc = app.get(url).document
         
-        val details = app.get(reqUrl).parsedSafe<TmdbDetails>() ?: return null
+        val title = doc.selectFirst(".mvic-desc h3")?.text() ?: cleanTitleFromUrl(url)
+        val plot = doc.selectFirst(".desc")?.text()
+        val yearText = doc.selectFirst(".mvici-right p:contains(Release:) a")?.text()
+        val year = yearText?.split("-")?.firstOrNull()?.toIntOrNull()
+        
+        // Extract background image style "url(...)"
+        val styleAttr = doc.selectFirst(".mvic-thumb")?.attr("style")
+        val poster = styleAttr?.let { Regex("""url\((.*?)\)""").find(it)?.groupValues?.get(1) }
 
         return newMovieLoadResponse(
-            name = details.title ?: "",
+            name = title,
             url = url,
             type = TvType.Movie,
             dataUrl = url 
         ) {
-            this.posterUrl = details.poster_path?.let { "https://image.tmdb.org/t/p/w500$it" }
-            this.plot = details.overview
-            this.year = details.release_date?.split("-")?.firstOrNull()?.toIntOrNull()
+            this.posterUrl = poster?.let { fixUrl(it) }
+            this.plot = plot
+            this.year = year
         }
     }
 
@@ -131,64 +113,73 @@ class Tamilian : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val tmdbId = data.substringAfterLast("/")
-        val pageUrl = "$HOST/tamil/tmdb/$tmdbId"
+        val watchUrl = if (data.endsWith("/")) "${data}watching.html" else "$data/watching.html"
+        val baseHeaders = mapOf("Referer" to data)
         
-        val script = app.get(pageUrl)
-            .document.selectFirst("script:containsData(function(p,a,c,k,e,d))")
-            ?.data()?.let { getAndUnpack(it) }
+        // --- STEP 1: Get the Internal Movie ID ---
+        val watchRes = app.get(watchUrl, headers = baseHeaders).text
+        val movieIdMatch = Regex("""movie\s*=\s*\{[^}]*id:\s*"(\d+)"""").find(watchRes)
+        val movieId = movieIdMatch?.groupValues?.get(1) ?: return false
 
-        val token = script?.substringAfter("FirePlayer(\"")?.substringBefore("\",") ?: return false
-        
-        val apiHeaders = mapOf(
+        val ajaxHeaders = mapOf(
             "X-Requested-With" to "XMLHttpRequest",
-            "Referer" to pageUrl,
-            "Origin" to HOST,
-            "Accept" to "*/*",
-            "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "Referer" to watchUrl
         )
 
-        val m3u8 = app.post("$HOST/player/index.php?data=$token&do=getVideo", headers = apiHeaders)
-            .parsedSafe<VideoData>()
-            
-        val sourceUrl = m3u8?.videoSource ?: return false
+        // --- STEP 2: Fetch the Hidden Server Buttons ---
+        val serverApiUrl = "$mainUrl/ajax/movie/episode/servers/${movieId}_1_full"
+        val servRes = app.get(serverApiUrl, headers = ajaxHeaders)
+        if (!servRes.isSuccessful) return false
+
+        val serverBtns = servRes.document.select("a[data-id]")
+        if (serverBtns.isEmpty()) return false
+
+        val targetBtn = serverBtns.firstOrNull { it.text().contains("MegaCloud", true) } ?: serverBtns.first()
         
-        safeApiCall {
-            callback.invoke(
-                newExtractorLink(
-                    name = name,
-                    source = name,
-                    url = sourceUrl,
-                    type = ExtractorLinkType.M3U8 
-                ) {
-                    this.referer = pageUrl
-                    this.headers = apiHeaders
-                    this.quality = Qualities.P1080.value 
-                }
-            )
+        // Strip out any garbage quotes/slashes added by the server
+        val cleanDataId = targetBtn.attr("data-id").replace("\"", "").replace("\\", "").replace("'", "")
+        val cleanDataName = targetBtn.attr("data-name").replace("\"", "").replace("\\", "").replace("'", "")
+
+        val fullDataId = if (cleanDataName.isNotBlank() && !cleanDataId.endsWith(cleanDataName)) {
+            "${cleanDataId}_${cleanDataName}"
+        } else {
+            cleanDataId
         }
-        return true
+
+        // --- STEP 3: Fetch the Final Player Link ---
+        val sourcesUrl = "$mainUrl/ajax/movie/episode/server/sources/$fullDataId"
+        val sourceRes = app.get(sourcesUrl, headers = ajaxHeaders)
+        if (!sourceRes.isSuccessful) return false
+
+        var finalLink: String? = null
+
+        // Try JSON parsing first
+        try {
+            finalLink = sourceRes.parsedSafe<LinkResponse>()?.link
+        } catch (e: Exception) {}
+
+        // Fallback: Regex scan the raw text for the Megacloud/Embedojo URL
+        if (finalLink == null) {
+            val match = Regex("""(https?://(?:embedojo\.net|megacloud\.[a-z]+)/[^\s"\'<>\\]+)""").find(sourceRes.text)
+            finalLink = match?.groupValues?.get(1)?.replace("\\", "")
+        }
+
+        // --- STEP 4: Handoff to Cloudstream ---
+        if (finalLink != null) {
+            // Cloudstream natively supports Megacloud/Embedojo. We just hand it the URL.
+            loadExtractor(
+                url = finalLink, 
+                referer = watchUrl, 
+                subtitleCallback = subtitleCallback, 
+                callback = callback
+            )
+            return true
+        }
+
+        return false
     }
 
-    data class TmdbResponse(
-        @JsonProperty("results") val results: List<TmdbMovie>?
-    )
-
-    data class TmdbMovie(
-        @JsonProperty("id") val id: Int?, 
-        @JsonProperty("title") val title: String?, 
-        @JsonProperty("poster_path") val poster_path: String?
-    )
-
-    data class TmdbDetails(
-        @JsonProperty("title") val title: String?, 
-        @JsonProperty("poster_path") val poster_path: String?, 
-        @JsonProperty("overview") val overview: String?,
-        @JsonProperty("release_date") val release_date: String?,
-        @JsonProperty("vote_average") val vote_average: Double?
-    )
-
-    data class VideoData(
-        @JsonProperty("videoSource") val videoSource: String?
+    data class LinkResponse(
+        @JsonProperty("link") val link: String?
     )
 }
