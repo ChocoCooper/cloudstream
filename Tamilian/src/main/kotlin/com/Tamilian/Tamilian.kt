@@ -39,8 +39,6 @@ class Tamilian : MainAPI() {
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         if (page > 1) return newHomePageResponse(emptyList())
 
-        // Updated with your scraped working IDs
-        val previewIds = listOf("1137861", "69537", "927342", "949229", "1136423", "263471", "833324", "370076", "148284", "281394")
         val tamilIds = listOf("1211999", "280951", "949380", "1351991", "1114668", "1323267", "1386625", "922360", "622792", "1311073")
         val dubbedIds = listOf("1579", "157336", "7451", "502356", "24428", "299536", "278", "634649", "238", "299534")
 
@@ -48,7 +46,8 @@ class Tamilian : MainAPI() {
             return coroutineScope {
                 ids.map { id ->
                     async {
-                        val reqUrl = "$TMDB_API/movie/$id?api_key=$TMDB_KEY&language=ta-IN"
+                        // Removed language parameter to default to English text
+                        val reqUrl = "$TMDB_API/movie/$id?api_key=$TMDB_KEY"
                         val details = app.get(reqUrl).parsedSafe<TmdbDetails>() ?: return@async null
                         
                         newMovieSearchResponse(
@@ -63,13 +62,11 @@ class Tamilian : MainAPI() {
             }
         }
 
-        val previewMovies = getMoviesFromIds(previewIds)
         val tamilMovies = getMoviesFromIds(tamilIds)
         val dubbedMovies = getMoviesFromIds(dubbedIds)
 
         return newHomePageResponse(
             listOf(
-                HomePageList("Featured Previews", previewMovies, isHorizontalImages = true),
                 HomePageList("Latest Tamil Movies", tamilMovies),
                 HomePageList("Tamil Dubbed Movies", dubbedMovies)
             )
@@ -80,7 +77,6 @@ class Tamilian : MainAPI() {
         val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&with_original_language=ta&query=$query"
         val response = app.get(url).parsedSafe<TmdbResponse>()
 
-        // Search still uses background checks because the user input is dynamic
         return coroutineScope {
             response?.results?.take(15)?.map { movie ->
                 async {
@@ -112,7 +108,8 @@ class Tamilian : MainAPI() {
 
     override suspend fun load(url: String): LoadResponse? {
         val tmdbId = url.substringAfterLast("/")
-        val reqUrl = "$TMDB_API/movie/$tmdbId?api_key=$TMDB_KEY&with_original_language=ta"
+        // Removed unnecessary parameters for direct ID lookups
+        val reqUrl = "$TMDB_API/movie/$tmdbId?api_key=$TMDB_KEY"
         
         val details = app.get(reqUrl).parsedSafe<TmdbDetails>() ?: return null
 
