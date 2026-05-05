@@ -30,8 +30,9 @@ class Tamilian : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie)
 
     companion object {
+        // A single, unified User-Agent prevents the server from flagging us as a bot
+        private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         private const val TMDB_API = "https://api.tmdb.org/3"
-        // List of fallback keys
         private val TMDB_KEYS = listOf(
             "fb7bb23f03b6994dafc674c074d01761",
             "e55425032d3d0f371fc776f302e7c09b",
@@ -88,12 +89,10 @@ class Tamilian : MainAPI() {
                         return "https://image.tmdb.org/t/p/w500$posterPath"
                     }
                 }
-                // If it successfully executed but found no poster, break the loop to avoid wasting other keys
-                break 
+                break // Success, but no poster found. Stop wasting keys.
                 
             } catch (e: Exception) {
-                // If the key is banned, rate-limited, or network fails, loop continues to the next key!
-                continue
+                continue // Key failed, try the next one
             }
         }
         return fallbackPoster
@@ -102,7 +101,7 @@ class Tamilian : MainAPI() {
     private data class ScrapedMovie(val title: String, val url: String, val nativePoster: String?, val year: Int?)
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        val doc = app.get("$mainUrl/home/").document
+        val doc = app.get("$mainUrl/home/", headers = mapOf("User-Agent" to USER_AGENT)).document
         
         val scrapedMovies = doc.select("a[href*='/movie/']").mapNotNull { element ->
             val href = element.attr("href")
@@ -144,7 +143,7 @@ class Tamilian : MainAPI() {
     }
 
     override suspend fun search(query: String): List<SearchResponse> {
-        val doc = app.get("$mainUrl/search/$query").document
+        val doc = app.get("$mainUrl/search/$query", headers = mapOf("User-Agent" to USER_AGENT)).document
         
         val scrapedMovies = doc.select("a[href*='/movie/']").mapNotNull { element ->
             val href = element.attr("href")
@@ -185,7 +184,7 @@ class Tamilian : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val doc = app.get(url).document
+        val doc = app.get(url, headers = mapOf("User-Agent" to USER_AGENT)).document
         
         val title = doc.selectFirst(".mvic-desc h3")?.text() ?: cleanTitleFromUrl(url)
         val plot = doc.selectFirst(".desc")?.text()
@@ -216,7 +215,7 @@ class Tamilian : MainAPI() {
         callback: (ExtractorLink) -> Unit
     ): Boolean {
         val watchUrl = if (data.endsWith("/")) "${data}watching.html" else "$data/watching.html"
-        val baseHeaders = mapOf("Referer" to data)
+        val baseHeaders = mapOf("Referer" to data, "User-Agent" to USER_AGENT)
         
         // --- STEP 1: Get the Internal Movie ID ---
         val watchRes = app.get(watchUrl, headers = baseHeaders).text
@@ -225,7 +224,8 @@ class Tamilian : MainAPI() {
 
         val ajaxHeaders = mapOf(
             "X-Requested-With" to "XMLHttpRequest",
-            "Referer" to watchUrl
+            "Referer" to watchUrl,
+            "User-Agent" to USER_AGENT
         )
 
         // --- STEP 2: Fetch the Hidden Server Buttons ---
@@ -262,16 +262,20 @@ class Tamilian : MainAPI() {
             finalLink = match?.groupValues?.get(1)?.replace("\\", "")
         }
 
-        // --- STEP 4: Direct API POST ---
+        // --- STEP 4: Establish Session & POST ---
         if (finalLink != null) {
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
             
+            // CRITICAL: We MUST visit the iframe link first to set up the session cookie in Cloudstream's memory.
+            // This prevents the server from handing us a fake .m3u8 that 404s.
+            app.get(finalLink, headers = mapOf("Referer" to watchUrl, "User-Agent" to USER_AGENT))
+
             val postHeaders = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to finalLink,
                 "Origin" to embedHost,
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "User-Agent" to USER_AGENT,
                 "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
             )
 
@@ -297,8 +301,9 @@ class Tamilian : MainAPI() {
                 }
             }
 
+            // Lock in the browser identity for ExoPlayer to stop 404s
             val playerHeaders = mapOf(
-                "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "User-Agent" to USER_AGENT,
                 "Referer" to finalLink,
                 "Origin" to embedHost,
                 "Accept" to "*/*"
