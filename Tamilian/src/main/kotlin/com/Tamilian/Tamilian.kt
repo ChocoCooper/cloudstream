@@ -66,7 +66,6 @@ class Tamilian : MainAPI() {
                 val baseUrl = "$TMDB_API/search/movie?api_key=$key&query=$title"
                 var results = emptyList<TmdbMovie>()
 
-                // 1. Try Exact Year Match first
                 if (year != null) {
                     val yearRes = app.get("$baseUrl&primary_release_year=$year").parsedSafe<TmdbSearchResponse>()
                     if (yearRes?.results?.isNotEmpty() == true) {
@@ -74,14 +73,12 @@ class Tamilian : MainAPI() {
                     }
                 }
                 
-                // 2. Fallback: If exact year failed, search without year constraint
                 if (results.isEmpty()) {
                     val genericRes = app.get(baseUrl).parsedSafe<TmdbSearchResponse>()
                     results = genericRes?.results ?: emptyList()
                 }
 
                 if (results.isNotEmpty()) {
-                    // Prioritize Tamil ("ta") movies over other languages
                     val bestMatch = results.firstOrNull { it.original_language == "ta" } ?: results.first()
                     val posterPath = bestMatch.poster_path
                     
@@ -89,10 +86,9 @@ class Tamilian : MainAPI() {
                         return "https://image.tmdb.org/t/p/w500$posterPath"
                     }
                 }
-                break // Success, but no poster found. Stop wasting keys.
-                
+                break 
             } catch (e: Exception) {
-                continue // Key failed, try the next one
+                continue 
             }
         }
         return fallbackPoster
@@ -135,7 +131,6 @@ class Tamilian : MainAPI() {
                 }
             }.awaitAll()
         }.distinctBy { 
-            // Removes duplicates pointing to the same TMDB entity
             if (it.posterUrl?.contains("tmdb.org") == true) it.posterUrl else it.url 
         }
 
@@ -262,20 +257,24 @@ class Tamilian : MainAPI() {
             finalLink = match?.groupValues?.get(1)?.replace("\\", "")
         }
 
-        // --- STEP 4: Establish Session & POST ---
+        // --- STEP 4: Session Cookies & POST ---
         if (finalLink != null) {
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
             
-            // CRITICAL: We MUST visit the iframe link first to set up the session cookie in Cloudstream's memory.
-            // This prevents the server from handing us a fake .m3u8 that 404s.
-            app.get(finalLink, headers = mapOf("Referer" to watchUrl, "User-Agent" to USER_AGENT))
+            // CRITICAL: Visit the iframe link first to generate Cloudflare/Session cookies
+            val iframeRes = app.get(finalLink, headers = mapOf("Referer" to watchUrl, "User-Agent" to USER_AGENT))
+            
+            val sessionCookies = mutableMapOf<String, String>()
+            sessionCookies.putAll(iframeRes.cookies)
+            var cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
 
             val postHeaders = mapOf(
                 "X-Requested-With" to "XMLHttpRequest",
                 "Referer" to finalLink,
                 "Origin" to embedHost,
                 "User-Agent" to USER_AGENT,
+                "Cookie" to cookieString,
                 "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
             )
 
@@ -284,6 +283,10 @@ class Tamilian : MainAPI() {
                 "$embedHost/player/index.php?data=$token&do=getVideo",
                 headers = postHeaders
             )
+
+            // Merge any new cookies returned by the POST request
+            sessionCookies.putAll(videoDataRes.cookies)
+            cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
 
             val parsedData = videoDataRes.parsedSafe<VideoData>()
             var sourceUrl = parsedData?.videoSource
@@ -301,12 +304,13 @@ class Tamilian : MainAPI() {
                 }
             }
 
-            // Lock in the browser identity for ExoPlayer to stop 404s
+            // CRITICAL: Feed the exact extracted cookies to ExoPlayer!
             val playerHeaders = mapOf(
                 "User-Agent" to USER_AGENT,
                 "Referer" to finalLink,
                 "Origin" to embedHost,
-                "Accept" to "*/*"
+                "Accept" to "*/*",
+                "Cookie" to cookieString 
             )
 
             if (!sourceUrl.isNullOrBlank()) {
@@ -318,7 +322,7 @@ class Tamilian : MainAPI() {
                         type = ExtractorLinkType.M3U8
                     ) {
                         this.referer = finalLink
-                        this.headers = playerHeaders 
+                        this.headers = playerHeaders // ExoPlayer will no longer get 404s!
                         this.quality = Qualities.P1080.value
                     }
                 )
