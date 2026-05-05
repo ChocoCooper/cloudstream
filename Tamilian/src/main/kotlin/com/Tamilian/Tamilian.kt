@@ -31,7 +31,14 @@ class Tamilian : MainAPI() {
 
     companion object {
         private const val TMDB_API = "https://api.tmdb.org/3"
-        private const val TMDB_KEY = "fb7bb23f03b6994dafc674c074d01761" 
+        // List of fallback keys
+        private val TMDB_KEYS = listOf(
+            "fb7bb23f03b6994dafc674c074d01761",
+            "e55425032d3d0f371fc776f302e7c09b",
+            "8301a21598f8b45668d5711a814f01f6",
+            "8cf43ad9c085135b9479ad5cf6bbcbda",
+            "da63548086e399ffc910fbc08526df05"
+        )
     }
 
     // --- HELPER: Safely handles relative URLs ---
@@ -51,25 +58,48 @@ class Tamilian : MainAPI() {
         }
     }
 
-    // --- HELPER: Fast TMDB Poster Fetcher ---
-    private suspend fun fetchTmdbPoster(title: String, fallbackPoster: String?): String? {
-        return try {
-            val url = "$TMDB_API/search/movie?api_key=$TMDB_KEY&query=$title"
-            val response = app.get(url).parsedSafe<TmdbSearchResponse>()
-            val posterPath = response?.results?.firstOrNull()?.poster_path
-            
-            if (!posterPath.isNullOrBlank()) {
-                "https://image.tmdb.org/t/p/w500$posterPath"
-            } else {
-                fallbackPoster
+    // --- HELPER: Smart Multi-Key TMDB Fetcher ---
+    private suspend fun fetchTmdbPoster(title: String, year: Int?, fallbackPoster: String?): String? {
+        for (key in TMDB_KEYS) {
+            try {
+                val baseUrl = "$TMDB_API/search/movie?api_key=$key&query=$title"
+                var results = emptyList<TmdbMovie>()
+
+                // 1. Try Exact Year Match first
+                if (year != null) {
+                    val yearRes = app.get("$baseUrl&primary_release_year=$year").parsedSafe<TmdbSearchResponse>()
+                    if (yearRes?.results?.isNotEmpty() == true) {
+                        results = yearRes.results
+                    }
+                }
+                
+                // 2. Fallback: If exact year failed, search without year constraint
+                if (results.isEmpty()) {
+                    val genericRes = app.get(baseUrl).parsedSafe<TmdbSearchResponse>()
+                    results = genericRes?.results ?: emptyList()
+                }
+
+                if (results.isNotEmpty()) {
+                    // Prioritize Tamil ("ta") movies over other languages
+                    val bestMatch = results.firstOrNull { it.original_language == "ta" } ?: results.first()
+                    val posterPath = bestMatch.poster_path
+                    
+                    if (!posterPath.isNullOrBlank()) {
+                        return "https://image.tmdb.org/t/p/w500$posterPath"
+                    }
+                }
+                // If it successfully executed but found no poster, break the loop to avoid wasting other keys
+                break 
+                
+            } catch (e: Exception) {
+                // If the key is banned, rate-limited, or network fails, loop continues to the next key!
+                continue
             }
-        } catch (e: Exception) {
-            fallbackPoster
         }
+        return fallbackPoster
     }
 
-    // Data Class to hold extracted elements before TMDB parsing
-    private data class ScrapedMovie(val title: String, val url: String, val nativePoster: String?)
+    private data class ScrapedMovie(val title: String, val url: String, val nativePoster: String?, val year: Int?)
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
         val doc = app.get("$mainUrl/home/").document
@@ -81,28 +111,32 @@ class Tamilian : MainAPI() {
             val url = href.toAbsoluteUrl()
             val title = cleanTitleFromUrl(url)
             
-            val img = element.selectFirst("img")
+            val card = element.parents().firstOrNull { it.hasClass("ml-item") }
+            val img = element.selectFirst("img") ?: card?.selectFirst("img")
             val nativePoster = img?.attr("data-original")?.takeIf { it.isNotBlank() } 
                 ?: img?.attr("src")?.takeIf { !it.startsWith("data:image") }
 
-            ScrapedMovie(title, url, nativePoster?.toAbsoluteUrl())
+            val year = card?.selectFirst(".mi-meta span")?.text()?.toIntOrNull()
+
+            ScrapedMovie(title, url, nativePoster?.toAbsoluteUrl(), year)
         }.distinctBy { it.title }
 
         val movies = coroutineScope {
             scrapedMovies.map { movie ->
                 async {
-                    val finalPoster = fetchTmdbPoster(movie.title, movie.nativePoster)
+                    val finalPoster = fetchTmdbPoster(movie.title, movie.year, movie.nativePoster)
                     newMovieSearchResponse(
                         name = movie.title,
                         url = movie.url,
                         type = TvType.Movie
                     ) {
                         this.posterUrl = finalPoster
+                        this.year = movie.year
                     }
                 }
             }.awaitAll()
         }.distinctBy { 
-            // THE MAGIC FIX: Deduplicate by TMDB poster to filter out alternate naming formats
+            // Removes duplicates pointing to the same TMDB entity
             if (it.posterUrl?.contains("tmdb.org") == true) it.posterUrl else it.url 
         }
 
@@ -119,23 +153,27 @@ class Tamilian : MainAPI() {
             val url = href.toAbsoluteUrl()
             val title = cleanTitleFromUrl(url)
             
-            val img = element.selectFirst("img")
+            val card = element.parents().firstOrNull { it.hasClass("ml-item") }
+            val img = element.selectFirst("img") ?: card?.selectFirst("img")
             val nativePoster = img?.attr("data-original")?.takeIf { it.isNotBlank() } 
                 ?: img?.attr("src")?.takeIf { !it.startsWith("data:image") }
 
-            ScrapedMovie(title, url, nativePoster?.toAbsoluteUrl())
+            val year = card?.selectFirst(".mi-meta span")?.text()?.toIntOrNull()
+
+            ScrapedMovie(title, url, nativePoster?.toAbsoluteUrl(), year)
         }.distinctBy { it.title }
 
         val movies = coroutineScope {
             scrapedMovies.map { movie ->
                 async {
-                    val finalPoster = fetchTmdbPoster(movie.title, movie.nativePoster)
+                    val finalPoster = fetchTmdbPoster(movie.title, movie.year, movie.nativePoster)
                     newMovieSearchResponse(
                         name = movie.title,
                         url = movie.url,
                         type = TvType.Movie
                     ) {
                         this.posterUrl = finalPoster
+                        this.year = movie.year
                     }
                 }
             }.awaitAll()
@@ -157,7 +195,7 @@ class Tamilian : MainAPI() {
         val styleAttr = doc.selectFirst(".mvic-thumb")?.attr("style")
         val nativePoster = styleAttr?.let { Regex("""url\((.*?)\)""").find(it)?.groupValues?.get(1) }?.toAbsoluteUrl()
 
-        val finalPoster = fetchTmdbPoster(title, nativePoster)
+        val finalPoster = fetchTmdbPoster(title, year, nativePoster)
 
         return newMovieLoadResponse(
             name = title,
@@ -224,7 +262,7 @@ class Tamilian : MainAPI() {
             finalLink = match?.groupValues?.get(1)?.replace("\\", "")
         }
 
-        // --- STEP 4: Direct API POST (Timeout-Proof) ---
+        // --- STEP 4: Direct API POST ---
         if (finalLink != null) {
             val token = finalLink.substringAfterLast("/")
             val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
@@ -251,7 +289,6 @@ class Tamilian : MainAPI() {
                 sourceUrl = match?.groupValues?.get(1)?.replace("\\", "")
             }
 
-            // Extract Captions
             parsedData?.tracks?.forEach { track ->
                 if (track.kind == "captions" && !track.file.isNullOrBlank()) {
                     subtitleCallback.invoke(
@@ -260,7 +297,6 @@ class Tamilian : MainAPI() {
                 }
             }
 
-            // Anti-crash headers for ExoPlayer
             val playerHeaders = mapOf(
                 "User-Agent" to "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                 "Referer" to finalLink,
@@ -308,6 +344,7 @@ class Tamilian : MainAPI() {
     )
 
     data class TmdbMovie(
-        @JsonProperty("poster_path") val poster_path: String?
+        @JsonProperty("poster_path") val poster_path: String?,
+        @JsonProperty("original_language") val original_language: String?
     )
 }
