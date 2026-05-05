@@ -24,6 +24,14 @@ class Tamilian : MainAPI() {
     override var lang = "ta"
     override val supportedTypes = setOf(TvType.Movie)
 
+    // --- HELPER: Safely handles relative URLs without relying on the Cloudstream base API ---
+    private fun String.toAbsoluteUrl(): String {
+        if (this.isBlank()) return ""
+        if (this.startsWith("http")) return this
+        if (this.startsWith("//")) return "https:$this"
+        return if (this.startsWith("/")) "$mainUrl$this" else "$mainUrl/$this"
+    }
+
     // --- HELPER: Cleans "the-batman-d3d9446" into "The Batman" ---
     private fun cleanTitleFromUrl(url: String): String {
         val slug = url.trimEnd('/').split("/").last()
@@ -40,7 +48,7 @@ class Tamilian : MainAPI() {
             val href = element.attr("href")
             if (href.contains("watching.html") || href.isBlank()) return@mapNotNull null
             
-            val url = fixUrl(href)
+            val url = href.toAbsoluteUrl()
             val title = cleanTitleFromUrl(url)
             
             val img = element.selectFirst("img")
@@ -51,7 +59,7 @@ class Tamilian : MainAPI() {
                 url = url,
                 type = TvType.Movie
             ) {
-                this.posterUrl = poster?.let { fixUrl(it) }
+                this.posterUrl = poster?.toAbsoluteUrl()
             }
         }.distinctBy { it.url }
 
@@ -67,7 +75,7 @@ class Tamilian : MainAPI() {
             val href = element.attr("href")
             if (href.contains("watching.html") || href.isBlank()) return@mapNotNull null
             
-            val url = fixUrl(href)
+            val url = href.toAbsoluteUrl()
             val title = cleanTitleFromUrl(url)
             
             val img = element.selectFirst("img")
@@ -78,7 +86,7 @@ class Tamilian : MainAPI() {
                 url = url,
                 type = TvType.Movie
             ) {
-                this.posterUrl = poster?.let { fixUrl(it) }
+                this.posterUrl = poster?.toAbsoluteUrl()
             }
         }.distinctBy { it.url }
     }
@@ -101,7 +109,7 @@ class Tamilian : MainAPI() {
             type = TvType.Movie,
             dataUrl = url 
         ) {
-            this.posterUrl = poster?.let { fixUrl(it) }
+            this.posterUrl = poster?.toAbsoluteUrl()
             this.plot = plot
             this.year = year
         }
@@ -134,7 +142,10 @@ class Tamilian : MainAPI() {
         val serverBtns = servRes.document.select("a[data-id]")
         if (serverBtns.isEmpty()) return false
 
-        val targetBtn = serverBtns.firstOrNull { it.text().contains("MegaCloud", true) } ?: serverBtns.first()
+        // FIX: The ?: return false operator guarantees targetBtn is NOT NULL for the .attr() calls below
+        val targetBtn = serverBtns.firstOrNull { it.text().contains("MegaCloud", true) } 
+            ?: serverBtns.firstOrNull() 
+            ?: return false
         
         // Strip out any garbage quotes/slashes added by the server
         val cleanDataId = targetBtn.attr("data-id").replace("\"", "").replace("\\", "").replace("'", "")
@@ -166,7 +177,6 @@ class Tamilian : MainAPI() {
 
         // --- STEP 4: Handoff to Cloudstream ---
         if (finalLink != null) {
-            // Cloudstream natively supports Megacloud/Embedojo. We just hand it the URL.
             loadExtractor(
                 url = finalLink, 
                 referer = watchUrl, 
