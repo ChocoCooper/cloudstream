@@ -14,9 +14,7 @@ import com.lagradost.cloudstream3.newHomePageResponse
 import com.lagradost.cloudstream3.newMovieLoadResponse
 import com.lagradost.cloudstream3.newMovieSearchResponse
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.newExtractorLink
+import com.lagradost.cloudstream3.utils.loadExtractor
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -30,10 +28,9 @@ class Tamilian : MainAPI() {
     override val supportedTypes = setOf(TvType.Movie)
 
     companion object {
-        // A single, unified User-Agent prevents the server from flagging us as a bot
         private const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         private const val TMDB_API = "https://api.tmdb.org/3"
-        // List of fallback keys
+        // List of fallback keys to prevent rate-limit blocks
         private val TMDB_KEYS = listOf(
             "fb7bb23f03b6994dafc674c074d01761",
             "e55425032d3d0f371fc776f302e7c09b",
@@ -263,82 +260,20 @@ class Tamilian : MainAPI() {
             finalLink = match?.groupValues?.get(1)?.replace("\\", "")
         }
 
-        // --- STEP 4: Establish Session & POST ---
+        // --- STEP 4: Handoff to Cloudstream's Native MegaCloud Extractor ---
         if (finalLink != null) {
             val token = finalLink.substringAfterLast("/")
-            val embedHost = if (finalLink.contains("megacloud")) "https://megacloud.tv" else "https://embedojo.net"
             
-            // CRITICAL: Visit the iframe link first to generate Cloudflare/Session cookies
-            val iframeRes = app.get(finalLink, headers = mapOf("Referer" to watchUrl, "User-Agent" to USER_AGENT))
-            val sessionCookies = mutableMapOf<String, String>()
-            sessionCookies.putAll(iframeRes.cookies)
-            var cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
-
-            val postHeaders = mapOf(
-                "X-Requested-With" to "XMLHttpRequest",
-                "Referer" to finalLink,
-                "Origin" to embedHost,
-                "User-Agent" to USER_AGENT,
-                "Cookie" to cookieString,
-                "Content-Type" to "application/x-www-form-urlencoded; charset=UTF-8"
+            // Trick Cloudstream into using its highly-maintained internal MegaCloud decryptor
+            val fakeMegacloudUrl = "https://megacloud.tv/embed-1/e-1/$token"
+            
+            loadExtractor(
+                url = fakeMegacloudUrl,
+                referer = watchUrl,
+                subtitleCallback = subtitleCallback,
+                callback = callback
             )
-
-            // Hit the /player/index.php endpoint
-            val videoDataRes = app.post(
-                "$embedHost/player/index.php?data=$token&do=getVideo",
-                headers = postHeaders
-            )
-
-            // Merge any new cookies returned by the POST request
-            sessionCookies.putAll(videoDataRes.cookies)
-            cookieString = sessionCookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
-
-            val parsedData = videoDataRes.parsedSafe<VideoData>()
-            var sourceUrl = parsedData?.videoSource
-
-            if (sourceUrl.isNullOrBlank()) {
-                val match = Regex(""""videoSource"\s*:\s*"([^"]+)"""").find(videoDataRes.text)
-                sourceUrl = match?.groupValues?.get(1)?.replace("\\", "")
-            }
-
-            parsedData?.tracks?.forEach { track ->
-                if (track.kind == "captions" && !track.file.isNullOrBlank()) {
-                    subtitleCallback.invoke(
-                        SubtitleFile(track.label ?: "Subtitles", track.file)
-                    )
-                }
-            }
-
-            // --- THE ULTIMATE ANTI-404 DISGUISE ---
-            // These exact headers trick Cloudflare into thinking ExoPlayer is a real Chrome browser.
-            val playerHeaders = mapOf(
-                "User-Agent" to USER_AGENT,
-                "Referer" to finalLink, 
-                "Origin" to embedHost,
-                "Accept" to "*/*",
-                "Accept-Language" to "en-US,en;q=0.9",
-                "Connection" to "keep-alive",
-                "Sec-Fetch-Dest" to "empty",
-                "Sec-Fetch-Mode" to "cors",
-                "Sec-Fetch-Site" to "cross-site",
-                "Cookie" to cookieString 
-            )
-
-            if (!sourceUrl.isNullOrBlank()) {
-                callback.invoke(
-                    newExtractorLink(
-                        name = "Tamilian HD",
-                        source = "Tamilian",
-                        url = sourceUrl,
-                        type = ExtractorLinkType.M3U8
-                    ) {
-                        this.referer = finalLink
-                        this.headers = playerHeaders 
-                        this.quality = Qualities.P1080.value
-                    }
-                )
-                return true
-            }
+            return true
         }
 
         return false
@@ -346,17 +281,6 @@ class Tamilian : MainAPI() {
 
     data class LinkResponse(
         @JsonProperty("link") val link: String?
-    )
-
-    data class Track(
-        @JsonProperty("file") val file: String?,
-        @JsonProperty("label") val label: String?,
-        @JsonProperty("kind") val kind: String?
-    )
-
-    data class VideoData(
-        @JsonProperty("videoSource") val videoSource: String?,
-        @JsonProperty("tracks") val tracks: List<Track>?
     )
 
     data class TmdbSearchResponse(
