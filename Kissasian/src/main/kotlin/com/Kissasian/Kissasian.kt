@@ -56,6 +56,9 @@ class Kissasian : MainAPI() {
         val plot = document.selectFirst(".entry-content[itemprop=description]")?.text()?.trim()
         
         val ratingText = document.selectFirst(".numscore")?.text()
+        // Convert the 1-10 rating to a Score object (value * 1000 for standard Cloudstream scaling)
+        val apiScore = ratingText?.toFloatOrNull()?.let { (it * 1000).toInt() }
+        
         val tags = document.select(".genxed a").map { it.text() }
         val actors = document.select(".split:contains(Casts:) a").map { ActorData(Actor(it.text())) }
 
@@ -77,14 +80,14 @@ class Kissasian : MainAPI() {
             newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data ?: url) {
                 this.posterUrl = poster
                 this.plot = plot
-                this.score = ratingText?.toFloatOrNull()?.times(10)?.toInt()
+                this.score = apiScore
                 this.tags = tags
             }
         } else {
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
-                this.score = ratingText?.toFloatOrNull()?.times(10)?.toInt()
+                this.score = apiScore
                 this.tags = tags
                 this.actors = actors
             }
@@ -99,17 +102,14 @@ class Kissasian : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // Dynamically collect every server from the dropdown
         val mirrorUrls = document.select("select.mirror option")
             .mapNotNull { it.attr("value") }
             .filter { it.isNotEmpty() }
             .map { fixUrl(it) }
             .toMutableList()
 
-        // Also check if there's an embed directly on the episode page
         mirrorUrls.add(data)
 
-        // amap = Async Map (Fetches all servers at once)
         mirrorUrls.distinct().amap { url ->
             try {
                 val mirrorDoc = app.get(url).document
@@ -118,11 +118,8 @@ class Kissasian : MainAPI() {
 
                 if (!iframeUrl.isNullOrEmpty()) {
                     val fixedIframe = fixUrl(iframeUrl)
-                    
-                    // 1. Try built-in extractors
                     val wasResolved = loadExtractor(fixedIframe, url, subtitleCallback, callback)
 
-                    // 2. If unknown, use our Universal Fallback
                     if (!wasResolved) {
                         universalExtractor(fixedIframe, url, callback)
                     }
@@ -143,16 +140,19 @@ class Kissasian : MainAPI() {
                 val domainName = embedUrl.split("//").getOrNull(1)?.split(".")?.getOrNull(0) ?: "Mirror"
                 
                 if (streamUrl.contains(".m3u8")) {
-                    M3u8Helper.generateM3u8(domainName, streamUrl, embedUrl).forEach { callback(it) }
+                    M3u8Helper.generateM3u8(domainName, streamUrl, embedUrl).forEach { link ->
+                        callback(link)
+                    }
                 } else {
+                    // FIX: Using newExtractorLink helper instead of constructor
                     callback(
-                        ExtractorLink(
+                        newExtractorLink(
                             source = domainName,
                             name = domainName,
                             url = streamUrl,
                             referer = embedUrl,
                             quality = Qualities.P1080.value,
-                            isM3u8 = false
+                            isM3u8 = streamUrl.contains(".m3u8")
                         )
                     )
                 }
