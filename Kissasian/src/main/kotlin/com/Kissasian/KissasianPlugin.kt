@@ -7,7 +7,11 @@ import android.content.Context
 @CloudstreamPlugin
 class KissasianPlugin: Plugin() {
     override fun load(context: Context) {
-        // Registers the Kissasian provider when the plugin is loaded
+        // Register your scraper
         registerMainAPI(Kissasian())
+        
+        // Register your custom extractors here!
+        registerExtractorAPI(LuluvidExtractor())
+        registerExtractorAPI(StrcloudExtractor())
     }
 }
