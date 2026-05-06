@@ -55,8 +55,9 @@ class Kissasian : MainAPI() {
         val plot = document.selectFirst(".entry-content[itemprop=description]")?.text()?.trim()
         
         val ratingText = document.selectFirst(".numscore")?.text()
-        // FIX: Convert Float to the required Score object
-        val apiScore = ratingText?.toFloatOrNull()?.let { Score(it, 10.0f) }
+        // FIX: Cloudstream Scores are stored as Int (value * 1000). 
+        // A rating of 8.5 becomes 8500.
+        val apiScore = ratingText?.toFloatOrNull()?.let { (it * 1000).toInt() }
         
         val tags = document.select(".genxed a").map { it.text() }
         val actors = document.select(".split:contains(Casts:) a").map { ActorData(Actor(it.text())) }
@@ -79,14 +80,14 @@ class Kissasian : MainAPI() {
             newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data ?: url) {
                 this.posterUrl = poster
                 this.plot = plot
-                this.score = apiScore
+                this.score = apiScore?.let { Score(it) }
                 this.tags = tags
             }
         } else {
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
-                this.score = apiScore
+                this.score = apiScore?.let { Score(it) }
                 this.tags = tags
                 this.actors = actors
             }
@@ -141,7 +142,6 @@ class Kissasian : MainAPI() {
                 if (streamUrl.contains(".m3u8")) {
                     M3u8Helper.generateM3u8(domainName, streamUrl, embedUrl).forEach { callback(it) }
                 } else {
-                    // FIX: Set properties inside the newExtractorLink block
                     callback(
                         newExtractorLink(
                             source = domainName,
