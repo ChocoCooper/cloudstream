@@ -16,7 +16,6 @@ class Kissasian : MainAPI() {
         TvType.Movie
     )
 
-    // Main Page Sections
     override val mainPage = mainPageOf(
         "$mainUrl/drama/" to "Latest Dramas",
         "$mainUrl/movie/" to "Movies",
@@ -56,8 +55,8 @@ class Kissasian : MainAPI() {
         val plot = document.selectFirst(".entry-content[itemprop=description]")?.text()?.trim()
         
         val ratingText = document.selectFirst(".numscore")?.text()
-        // Convert the 1-10 rating to a Score object (value * 1000 for standard Cloudstream scaling)
-        val apiScore = ratingText?.toFloatOrNull()?.let { (it * 1000).toInt() }
+        // FIX: Convert Float to the required Score object
+        val apiScore = ratingText?.toFloatOrNull()?.let { Score(it, 10.0f) }
         
         val tags = document.select(".genxed a").map { it.text() }
         val actors = document.select(".split:contains(Casts:) a").map { ActorData(Actor(it.text())) }
@@ -140,20 +139,18 @@ class Kissasian : MainAPI() {
                 val domainName = embedUrl.split("//").getOrNull(1)?.split(".")?.getOrNull(0) ?: "Mirror"
                 
                 if (streamUrl.contains(".m3u8")) {
-                    M3u8Helper.generateM3u8(domainName, streamUrl, embedUrl).forEach { link ->
-                        callback(link)
-                    }
+                    M3u8Helper.generateM3u8(domainName, streamUrl, embedUrl).forEach { callback(it) }
                 } else {
-                    // FIX: Using newExtractorLink helper instead of constructor
+                    // FIX: Set properties inside the newExtractorLink block
                     callback(
                         newExtractorLink(
                             source = domainName,
                             name = domainName,
-                            url = streamUrl,
-                            referer = embedUrl,
-                            quality = Qualities.P1080.value,
-                            isM3u8 = streamUrl.contains(".m3u8")
-                        )
+                            url = streamUrl
+                        ).apply {
+                            this.referer = embedUrl
+                            this.quality = Qualities.P1080.value
+                        }
                     )
                 }
             }
