@@ -1,266 +1,162 @@
-package com.example.kissasian
+package com.lagradost.cloudstream3.plugins
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.*
-import com.lagradost.cloudstream3.network.CloudflareKiller
 import org.jsoup.nodes.Element
 
-class KissAsian : MainAPI() {
-
-    override var mainUrl  = "https://kissasian.cam"
-    override var name     = "KissAsian"
-    override val lang     = "en"
+class Kissasian : MainAPI() {
+    override var mainUrl = "https://kissasian.cam"
+    override var name = "KissAsian"
     override val hasMainPage = true
-    override val hasSearch   = true
-
+    override var lang = "en"
+    override val hasDownloadSupport = true
+    
     override val supportedTypes = setOf(
         TvType.AsianDrama,
         TvType.Movie
     )
 
-    // ── CloudFlare / bot-check bypass ──────────────────────────────────────
-    private val cfKiller = CloudflareKiller()
-
-    private suspend fun fetchDoc(url: String) =
-        app.get(url, interceptor = cfKiller).document
-
-    // ── Main page sections ─────────────────────────────────────────────────
+    // Main Page Sections
     override val mainPage = mainPageOf(
-        "$mainUrl/drama/"        to "Latest Dramas",
-        "$mainUrl/movie/"        to "Movies",
-        "$mainUrl/kshow/"        to "Korean Shows",
-        "$mainUrl/drama-list/"   to "Drama List (A–Z)",
+        "$mainUrl/drama/" to "Latest Dramas",
+        "$mainUrl/movie/" to "Movies",
+        "$mainUrl/kshow/" to "Korean Shows",
     )
 
     override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
-        // Most kissasian-style sites use /page/N/ pagination
-        val pageUrl = if (page == 1) request.data
-                      else "${request.data.trimEnd('/')}/page/$page/"
-        val doc   = fetchDoc(pageUrl)
+        val pageUrl = if (page == 1) request.data else "${request.data.trimEnd('/')}/page/$page/"
+        val doc = app.get(pageUrl).document
         val items = doc.select(".bsx").mapNotNull { it.toSearchResult() }
         return newHomePageResponse(request.name, items)
     }
 
-    // ── Search ─────────────────────────────────────────────────────────────
     override suspend fun search(query: String): List<SearchResponse> {
-        val doc = fetchDoc("$mainUrl/?s=${query.encodeUrl()}")
+        val doc = app.get("$mainUrl/?s=$query").document
         return doc.select(".bsx").mapNotNull { it.toSearchResult() }
     }
 
-    // ── Shared element → SearchResponse converter ──────────────────────────
     private fun Element.toSearchResult(): SearchResponse? {
-        val a      = selectFirst("a") ?: return null
-        val href   = fixUrl(a.attr("href"))
-
-        val title  = selectFirst(".tt h2")?.text()?.trim()
-            ?: selectFirst(".tt")?.text()?.trim()
-            ?: return null
-
-        val poster = selectFirst("img")?.run {
-            attr("data-src").ifBlank { attr("src") }
-        }
-
+        val a = selectFirst("a") ?: return null
+        val href = fixUrl(a.attr("href"))
+        val title = selectFirst(".tt h2")?.text()?.trim() ?: selectFirst(".tt")?.text()?.trim() ?: return null
+        val poster = selectFirst("img")?.attr("src")
         val typeText = selectFirst(".typez")?.text()?.trim() ?: ""
 
         return if (typeText.contains("Movie", ignoreCase = true)) {
-            newMovieSearchResponse(title, href, TvType.Movie) { posterUrl = poster }
+            newMovieSearchResponse(title, href, TvType.Movie) { this.posterUrl = poster }
         } else {
-            newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { posterUrl = poster }
+            newTvSeriesSearchResponse(title, href, TvType.AsianDrama) { this.posterUrl = poster }
         }
     }
 
-    // ── Series / Movie detail page ─────────────────────────────────────────
-    override suspend fun load(url: String): LoadResponse? {
-        val doc = fetchDoc(url)
+    override suspend fun load(url: String): LoadResponse {
+        val document = app.get(url).document
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "Unknown"
+        val poster = document.selectFirst(".ts-post-image")?.attr("src")
+        val plot = document.selectFirst(".entry-content[itemprop=description]")?.text()?.trim()
+        
+        val ratingText = document.selectFirst(".numscore")?.text()
+        val tags = document.select(".genxed a").map { it.text() }
+        val actors = document.select(".split:contains(Casts:) a").map { ActorData(Actor(it.text())) }
 
-        val title = doc.selectFirst(
-            ".entry-title, h1.entry-title, .infox h1, .entry-header h1"
-        )?.text()?.trim() ?: return null
-
-        val poster = doc.selectFirst(
-            ".thumb img, .poster img, .entry-content img, img.attachment-post-thumbnail"
-        )?.run { attr("data-src").ifBlank { attr("src") } }
-
-        val plot = doc.selectFirst(
-            ".entry-content p, .synp p, .spe p, [itemprop=description]"
-        )?.text()?.trim()
-
-        val tags = doc.select(".genxed a, .sgeneros a, .genre a").map { it.text() }
-
-        val year = doc.selectFirst(".spe span:contains(Year) a, .info-content span:contains(Year)")
-            ?.text()?.trim()?.takeLast(4)?.toIntOrNull()
-
-        val typeText = doc.selectFirst(".spe span:contains(Type), .typez")?.text() ?: ""
-        val isMovie  = typeText.contains("Movie", ignoreCase = true)
-
-        // ── Episode list ───────────────────────────────────────────────────
-        // Episodes are usually listed newest-first; we reverse to Ep 1 at top
-        val rawEpisodes = doc.select(
-            ".eplister ul li a, .bxcl ul li a, #episode_by_temp ul li a"
-        ).map { ep ->
-            val epHref  = fixUrl(ep.attr("href"))
-            val numText = ep.selectFirst(".epl-num")?.text()?.trim()
-            val epTitle = ep.selectFirst(".epl-title")?.text()?.trim() ?: ep.text().trim()
-            val label   = if (numText != null) "$numText – $epTitle" else epTitle
-            val epNum   = numText?.filter { it.isDigit() }?.toIntOrNull()
-            Episode(data = epHref, name = label, episode = epNum)
+        val episodes = document.select(".eplister ul li a, .bxcl ul li a").mapNotNull { element ->
+            val href = fixUrl(element.attr("href"))
+            val epNumText = element.selectFirst(".epl-num")?.text()?.replace(Regex("[^0-9.]"), "")
+            val epTitle = element.selectFirst(".epl-title")?.text()?.trim() ?: element.text().trim()
+            
+            newEpisode(href) {
+                this.name = epTitle
+                this.episode = epNumText?.toFloatOrNull()?.toInt()
+            }
         }.reversed()
 
-        // ── Build response ─────────────────────────────────────────────────
-        return if (isMovie || rawEpisodes.size == 1) {
-            newMovieLoadResponse(
-                title, url, TvType.Movie,
-                dataUrl = rawEpisodes.firstOrNull()?.data ?: url
-            ) {
+        val typeText = document.selectFirst(".spe span:contains(Type)")?.text() ?: ""
+        val tvType = if (typeText.contains("Movie", ignoreCase = true)) TvType.Movie else TvType.AsianDrama
+
+        return if (tvType == TvType.Movie) {
+            newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data ?: url) {
                 this.posterUrl = poster
-                this.plot      = plot
-                this.tags      = tags
-                this.year      = year
+                this.plot = plot
+                this.score = ratingText?.toFloatOrNull()?.times(10)?.toInt()
+                this.tags = tags
             }
         } else {
-            newTvSeriesLoadResponse(title, url, TvType.AsianDrama, rawEpisodes) {
+            newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
-                this.plot      = plot
-                this.tags      = tags
-                this.year      = year
+                this.plot = plot
+                this.score = ratingText?.toFloatOrNull()?.times(10)?.toInt()
+                this.tags = tags
+                this.actors = actors
             }
         }
     }
 
-    // ── Link extraction — the heart of multi-server support ───────────────
-    //
-    //  Strategy mirrors the Python scraper exactly:
-    //    1. Check #pembed iframe on the episode page  → Main Server
-    //    2. For every <option> in select.mirror       → fetch that mirror
-    //       sub-page and grab its #pembed iframe      → Server N
-    //
-    //  Every embed URL is then handed to CloudStream's loadExtractor() which
-    //  handles StreamTape, Dood, VidHide, FileMoon, DS2Play, etc.
-    // ──────────────────────────────────────────────────────────────────────
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
+        val document = app.get(data).document
 
-        val doc     = fetchDoc(data)
-        val servers = mutableListOf<Pair<String, String>>()   // (label, embedUrl)
+        // Dynamically collect every server from the dropdown
+        val mirrorUrls = document.select("select.mirror option")
+            .mapNotNull { it.attr("value") }
+            .filter { it.isNotEmpty() }
+            .map { fixUrl(it) }
+            .toMutableList()
 
-        // ── 1. Main / default embed ────────────────────────────────────────
-        doc.selectFirst("#pembed iframe, .mplayer iframe")
-            ?.attr("src")?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?.let { servers.add("Main Server" to fixUrl(it)) }
+        // Also check if there's an embed directly on the episode page
+        mirrorUrls.add(data)
 
-        // ── 2. Mirror dropdown ─────────────────────────────────────────────
-        //
-        //  Each <option value="?mirror=2"> (or similar relative URL) points
-        //  to a sub-page that contains its own #pembed iframe.
-        doc.select("select.mirror option, .mirrorlink option").forEach { opt ->
-            val optValue = opt.attr("value").trim()
-            val optName  = opt.text().trim()
-
-            // Skip empty placeholder ("Choose Server", etc.)
-            if (optValue.isEmpty() || optName.isEmpty() ||
-                optName.contains("choose", ignoreCase = true) ||
-                optName.contains("select", ignoreCase = true)
-            ) return@forEach
-
-            val mirrorUrl = fixUrl(optValue).let { raw ->
-                // If it looks like a relative path/query, resolve against episode URL
-                if (raw.startsWith("http")) raw else "$data${raw.trimStart('/')}"
-            }
-
+        // amap = Async Map (Fetches all servers at once)
+        mirrorUrls.distinct().amap { url ->
             try {
-                val mDoc    = fetchDoc(mirrorUrl)
-                val mIframe = mDoc.selectFirst("#pembed iframe, .mplayer iframe")
-                mIframe?.attr("src")?.trim()
-                    ?.takeIf { it.isNotEmpty() }
-                    ?.let { servers.add(optName to fixUrl(it)) }
-            } catch (e: Exception) {
-                // Mirror fetch failed — skip silently
-            }
-        }
+                val mirrorDoc = app.get(url).document
+                val iframeUrl = mirrorDoc.selectFirst("#pembed iframe")?.attr("src") 
+                    ?: mirrorDoc.selectFirst("iframe")?.attr("src")
 
-        if (servers.isEmpty()) return false
+                if (!iframeUrl.isNullOrEmpty()) {
+                    val fixedIframe = fixUrl(iframeUrl)
+                    
+                    // 1. Try built-in extractors
+                    val wasResolved = loadExtractor(fixedIframe, url, subtitleCallback, callback)
 
-        // ── 3. Feed every embed URL to the extractor engine ───────────────
-        //
-        //  CloudStream has built-in extractors for:
-        //    StreamTape, Dood, FileMoon, VidHide, VidPlay, DS2Play,
-        //    StreamWish, Mp4upload, JustPlayer variants, and many more.
-        //
-        //  For hosts without a built-in extractor we fall back to a
-        //  generic iframe/direct-link attempt via loadExtractor().
-        servers.forEachIndexed { idx, (label, embedUrl) ->
-            try {
-                // loadExtractor returns false for unknown hosts but won't throw
-                val loaded = loadExtractor(
-                    url              = embedUrl,
-                    referer          = data,
-                    subtitleCallback = subtitleCallback,
-                    callback         = callback
-                )
-
-                // Fallback: if the embed URL itself is a playable stream
-                if (!loaded) {
-                    handleUnknownEmbed(embedUrl, label, data, callback)
+                    // 2. If unknown, use our Universal Fallback
+                    if (!wasResolved) {
+                        universalExtractor(fixedIframe, url, callback)
+                    }
                 }
-            } catch (e: Exception) {
-                // Individual server failure should not abort the rest
-            }
+            } catch (e: Exception) { }
         }
-
         return true
     }
 
-    // ── Fallback for embed hosts without a registered extractor ───────────
-    //
-    //  Some hosts (e.g. mdbekjwqa.pw, strcloud.in, krakenfiles) may not be
-    //  registered in the CloudStream extractor list.  We do a lightweight
-    //  page fetch and look for a raw video src as a last resort.
-    private suspend fun handleUnknownEmbed(
-        embedUrl : String,
-        label    : String,
-        referer  : String,
-        callback : (ExtractorLink) -> Unit
-    ) {
+    private suspend fun universalExtractor(embedUrl: String, referer: String, callback: (ExtractorLink) -> Unit) {
         try {
-            val doc = app.get(
-                embedUrl,
-                referer  = referer,
-                headers  = mapOf("Accept" to "*/*"),
-                interceptor = cfKiller
-            ).document
-
-            // Common patterns: <source src="…">, <video src="…">, file: "…"
-            val videoSrc =
-                doc.selectFirst("source[src]")?.attr("src")
-                    ?: doc.selectFirst("video[src]")?.attr("src")
-                    ?: Regex("""["\']?(?:file|src)["\']?\s*:\s*["\']([^"\']+\.m3u8[^"\']*)["\']""")
-                        .find(doc.html())?.groupValues?.get(1)
-                    ?: Regex("""["\']?(?:file|src)["\']?\s*:\s*["\']([^"\']+\.mp4[^"\']*)["\']""")
-                        .find(doc.html())?.groupValues?.get(1)
-
-            videoSrc?.let { src ->
-                callback(
-                    ExtractorLink(
-                        source   = this.name,
-                        name     = "$name – $label",
-                        url      = fixUrl(src),
-                        referer  = embedUrl,
-                        quality  = Qualities.Unknown.value,
-                        isM3u8   = src.contains(".m3u8")
+            val response = app.get(embedUrl, referer = referer).text
+            val unpackedSource = getPacked(response) ?: response
+            val videoRegex = Regex("""(?:file|src|source)\s*[:=]\s*["'](https?://[^"']+(?:\.m3u8|\.mp4)[^"']*)["']""")
+            
+            videoRegex.findAll(unpackedSource).forEach { match ->
+                val streamUrl = match.groupValues[1]
+                val domainName = embedUrl.split("//").getOrNull(1)?.split(".")?.getOrNull(0) ?: "Mirror"
+                
+                if (streamUrl.contains(".m3u8")) {
+                    M3u8Helper.generateM3u8(domainName, streamUrl, embedUrl).forEach { callback(it) }
+                } else {
+                    callback(
+                        ExtractorLink(
+                            source = domainName,
+                            name = domainName,
+                            url = streamUrl,
+                            referer = embedUrl,
+                            quality = Qualities.P1080.value,
+                            isM3u8 = false
+                        )
                     )
-                )
+                }
             }
-        } catch (e: Exception) {
-            // Best-effort; silently ignored
-        }
+        } catch (e: Exception) { }
     }
-
-    // ── Tiny helpers ───────────────────────────────────────────────────────
-    private fun String.encodeUrl() =
-        java.net.URLEncoder.encode(this, "UTF-8")
 }
