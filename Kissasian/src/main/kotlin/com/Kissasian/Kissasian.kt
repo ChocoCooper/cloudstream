@@ -55,14 +55,14 @@ class Kissasian : MainAPI() {
             val epTitle = element.selectFirst(".epl-title")?.text()?.trim()
             
             // Fallback to the whole text if specific title class isn't found
-            val name = if (epTitle.isNullOrEmpty()) element.text().trim() else epTitle
+            val epName = if (epTitle.isNullOrEmpty()) element.text().trim() else epTitle
             val epNum = epNumText?.toFloatOrNull()?.toInt()
 
-            Episode(
-                data = href,
-                name = name,
-                episode = epNum
-            )
+            // FIX: Using the newEpisode builder instead of the deprecated Episode() constructor
+            newEpisode(href) {
+                this.name = epName
+                this.episode = epNum
+            }
         }.reversed() // Reverse so Episode 1 is at the top of the UI
 
         return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, episodes) {
@@ -74,18 +74,18 @@ class Kissasian : MainAPI() {
     // ==========================================
     // 3. LOAD LINKS: Finds the video players
     // ==========================================
+    // FIX: Swapped subtitleCallback and callback order to match the new API
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
-        callback: (ExtractorLink) -> Unit,
-        subtitleCallback: (SubtitleFile) -> Unit
+        subtitleCallback: (SubtitleFile) -> Unit,
+        callback: (ExtractorLink) -> Unit
     ): Boolean {
         val document = app.get(data).document
 
         // Grab the main player iframe if it exists
         val mainIframe = document.selectFirst("#pembed iframe")?.attr("src")
         if (!mainIframe.isNullOrEmpty()) {
-            // 'data' is passed as the referer here, which bypasses the embed block!
             loadExtractor(fixUrl(mainIframe), data, subtitleCallback, callback)
         }
 
