@@ -1,11 +1,8 @@
 package com.lagradost.cloudstream3.plugins
 
 import com.lagradost.cloudstream3.*
-import com.lagradost.cloudstream3.utils.ExtractorApi
-import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
-import com.lagradost.cloudstream3.utils.loadExtractor
-import com.lagradost.cloudstream3.utils.getPacked
+import com.lagradost.cloudstream3.utils.*
+import org.jsoup.nodes.Element
 
 class Kissasian : MainAPI() {
     override var mainUrl = "https://kissasian.cam"
@@ -19,18 +16,13 @@ class Kissasian : MainAPI() {
         TvType.Movie
     )
 
-    // ==========================================
-    // 1. SEARCH: Finds shows based on a query
-    // ==========================================
     override suspend fun search(query: String): List<SearchResponse> {
         val document = app.get("$mainUrl/?s=$query").document
-        
         return document.select(".bsx").mapNotNull { element ->
             val a = element.selectFirst("a") ?: return@mapNotNull null
             val title = element.selectFirst(".tt h2")?.text() 
                 ?: element.selectFirst(".tt")?.text() 
                 ?: return@mapNotNull null
-                
             val href = fixUrl(a.attr("href"))
             val image = element.selectFirst("img")?.attr("src")
 
@@ -40,39 +32,34 @@ class Kissasian : MainAPI() {
         }
     }
 
-    // ==========================================
-    // 2. LOAD: Scrapes the series page for episodes
-    // ==========================================
     override suspend fun load(url: String): LoadResponse {
         val document = app.get(url).document
-
-        val title = document.selectFirst("h1.entry-title, .infox h1")?.text()?.trim() ?: "Unknown"
-        val poster = document.selectFirst(".thumb img, .ts-post-image")?.attr("src")
-        val plot = document.selectFirst(".entry-content p, .desc, .mindes")?.text()?.trim()
+        val title = document.selectFirst("h1.entry-title")?.text()?.trim() ?: "Unknown"
+        val poster = document.selectFirst(".ts-post-image")?.attr("src")
+        val plot = document.selectFirst(".entry-content[itemprop=description]")?.text()?.trim()
+        val rating = document.selectFirst(".numscore")?.text()?.filter { it.isDigit() || it == '.' }?.toFloatOrNull()?.times(10)?.toInt()
+        val tags = document.select(".genxed a").map { it.text() }
+        val actors = document.select(".split:contains(Casts:) a").map { ActorData(Actor(it.text())) }
 
         val episodes = document.select(".eplister ul li a, .bxcl ul li a").mapNotNull { element ->
             val href = fixUrl(element.attr("href"))
             val epNumText = element.selectFirst(".epl-num")?.text()?.replace(Regex("[^0-9.]"), "")
-            val epTitle = element.selectFirst(".epl-title")?.text()?.trim()
-            
-            val epName = if (epTitle.isNullOrEmpty()) element.text().trim() else epTitle
-            val epNum = epNumText?.toFloatOrNull()?.toInt()
-
+            val epName = element.selectFirst(".epl-title")?.text()?.trim() ?: element.text().trim()
             newEpisode(href) {
                 this.name = epName
-                this.episode = epNum
+                this.episode = epNumText?.toFloatOrNull()?.toInt()
             }
         }.reversed()
 
         return newTvSeriesLoadResponse(title, url, TvType.AsianDrama, episodes) {
             this.posterUrl = poster
             this.plot = plot
+            this.rating = rating
+            this.tags = tags
+            this.actors = actors
         }
     }
 
-    // ==========================================
-    // 3. LOAD LINKS: Finds the video players
-    // ==========================================
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
@@ -81,106 +68,86 @@ class Kissasian : MainAPI() {
     ): Boolean {
         val document = app.get(data).document
 
-        // 1. Check Main Player
-        val mainIframe = document.selectFirst("#pembed iframe")?.attr("src")
-        if (!mainIframe.isNullOrEmpty()) {
-            loadExtractor(fixUrl(mainIframe), data, subtitleCallback, callback)
-        }
+        // 1. Collect all potential mirror URLs from the dropdown
+        val mirrorUrls = document.select("select.mirror option")
+            .mapNotNull { it.attr("value") }
+            .filter { it.isNotEmpty() }
+            .map { fixUrl(it) }
+            .toMutableList()
 
-        // 2. Check Mirrors
-        val mirrors = document.select("select.mirror option")
-        mirrors.forEach { mirror ->
-            val value = mirror.attr("value")
-            if (value.isNotEmpty()) {
-                val mirrorUrl = fixUrl(value)
-                val mirrorDoc = app.get(mirrorUrl).document
-                val mirrorIframe = mirrorDoc.selectFirst("#pembed iframe")?.attr("src")
-                
-                if (!mirrorIframe.isNullOrEmpty()) {
-                    loadExtractor(fixUrl(mirrorIframe), data, subtitleCallback, callback)
+        // 2. Add the current page as well (in case the default player is embedded there)
+        mirrorUrls.add(data)
+
+        // 3. Process all unique servers in parallel
+        mirrorUrls.distinct().apmap { url ->
+            try {
+                val mirrorDoc = app.get(url).document
+                val iframeUrl = mirrorDoc.selectFirst("#pembed iframe")?.attr("src") 
+                    ?: mirrorDoc.selectFirst("iframe")?.attr("src")
+
+                if (!iframeUrl.isNullOrEmpty()) {
+                    val fixedIframe = fixUrl(iframeUrl)
+                    
+                    // STEP A: Try internal Cloudstream extractors (Streamtape, Doodstream, etc.)
+                    val wasResolved = loadExtractor(fixedIframe, url, subtitleCallback, callback)
+
+                    // STEP B: Universal Fallback for unknown servers
+                    if (!wasResolved) {
+                        universalExtractor(fixedIframe, url, callback)
+                    }
                 }
+            } catch (e: Exception) {
+                // Log or ignore failed mirror fetches
             }
         }
-
         return true
     }
-}
 
-// ==========================================
-// 4. CUSTOM EXTRACTORS (Bypass 404s)
-// ==========================================
-
-class LuluvidExtractor : ExtractorApi() {
-    override val name = "Luluvid"
-    override val mainUrl = "https://luluvid.com"
-    override val requiresReferer = true
-
-    override suspend fun getUrl(url: String, referer: String?): List<ExtractorLink>? {
-        val extractedLinks = mutableListOf<ExtractorLink>()
+    /**
+     * The Universal Scraper:
+     * Logic to find playable links in raw HTML/JS of unknown servers
+     */
+    private suspend fun universalExtractor(
+        embedUrl: String, 
+        referer: String, 
+        callback: (ExtractorLink) -> Unit
+    ) {
         try {
-            // Fetch the iframe HTML
-            val response = app.get(url, referer = referer).text
+            // Fetch the embed page source
+            val response = app.get(embedUrl, referer = referer).text
             
-            // Luluvid and similar hosts often hide links in packed JavaScript
-            val unpacked = getPacked(response) ?: response
+            // Check for and unpack 'Dean Edwards' packer (common in video hosts)
+            val unpackedSource = getPacked(response) ?: response
 
-            // Generic Regex to catch standard m3u8 or mp4 files in the source
-            val videoUrlRegex = Regex("""(?:file|src)\s*:\s*["'](https?://[^"']+(?:\.m3u8|\.mp4)[^"']*)["']""")
-            val match = videoUrlRegex.find(unpacked)
+            // Comprehensive Regex to find .m3u8 or .mp4 sources
+            // Handles formats like: file: "URL", src: 'URL', source src="URL"
+            val videoRegex = Regex("""(?:file|src|source)\s*[:=]\s*["'](https?://[^"']+(?:\.m3u8|\.mp4)[^"']*)["']""")
             
-            if (match != null) {
-                val finalVideoUrl = match.groupValues[1]
-                extractedLinks.add(
-                    // FIX: Using the newExtractorLink factory method
-                    newExtractorLink(
-                        source = name,
-                        name = name,
-                        url = finalVideoUrl,
-                        referer = url,
-                        quality = Qualities.P1080.value, // Defaulting to 1080p
-                        isM3u8 = finalVideoUrl.contains(".m3u8")
+            videoRegex.findAll(unpackedSource).forEach { match ->
+                val streamUrl = match.groupValues[1]
+                val domainName = embedUrl.split("//").getOrNull(1)?.split(".")?.getOrNull(0) ?: "Mirror"
+                
+                if (streamUrl.contains(".m3u8")) {
+                    // Use M3u8Helper to automatically get multiple qualities from the playlist
+                    M3u8Helper.generateM3u8(domainName, streamUrl, embedUrl).forEach { link ->
+                        callback(link)
+                    }
+                } else {
+                    // Direct MP4 link
+                    callback(
+                        newExtractorLink(
+                            source = domainName,
+                            name = domainName,
+                            url = streamUrl,
+                            referer = embedUrl,
+                            quality = Qualities.P1080.value, // Defaulting to high
+                            isM3u8 = false
+                        )
                     )
-                )
+                }
             }
         } catch (e: Exception) {
-            e.printStackTrace()
+            // Extraction failed for this specific server
         }
-        return extractedLinks
-    }
-}
-
-class StrcloudExtractor : ExtractorApi() {
-    override val name = "Strcloud"
-    override val mainUrl = "https://strcloud.in"
-    override val requiresReferer = true
-
-    override suspend fun getUrl(url: String, referer: String?): List<ExtractorLink>? {
-        val extractedLinks = mutableListOf<ExtractorLink>()
-        try {
-            val response = app.get(url, referer = referer).text
-            val unpacked = getPacked(response) ?: response
-
-            // Generic Regex to catch standard m3u8 or mp4 files
-            val videoUrlRegex = Regex("""(?:file|src)\s*:\s*["'](https?://[^"']+(?:\.m3u8|\.mp4)[^"']*)["']""")
-            val match = videoUrlRegex.find(unpacked)
-            
-            if (match != null) {
-                val finalVideoUrl = match.groupValues[1]
-                extractedLinks.add(
-                    // FIX: Using the newExtractorLink factory method
-                    newExtractorLink(
-                        source = name,
-                        name = name,
-                        url = finalVideoUrl,
-                        referer = url,
-                        quality = Qualities.P1080.value,
-                        isM3u8 = finalVideoUrl.contains(".m3u8")
-                    )
-                )
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        return extractedLinks
     }
 }
