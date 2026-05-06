@@ -131,12 +131,13 @@ class LuluvidExtractor : ExtractorApi() {
             if (match != null) {
                 val finalVideoUrl = match.groupValues[1]
                 extractedLinks.add(
-                    ExtractorLink(
+                    // FIX: Using the newExtractorLink factory method
+                    newExtractorLink(
                         source = name,
                         name = name,
                         url = finalVideoUrl,
                         referer = url,
-                        quality = Qualities.P1080.value, // Defaulting to 1080p, adjust if they provide multi-quality
+                        quality = Qualities.P1080.value, // Defaulting to 1080p
                         isM3u8 = finalVideoUrl.contains(".m3u8")
                     )
                 )
@@ -166,7 +167,8 @@ class StrcloudExtractor : ExtractorApi() {
             if (match != null) {
                 val finalVideoUrl = match.groupValues[1]
                 extractedLinks.add(
-                    ExtractorLink(
+                    // FIX: Using the newExtractorLink factory method
+                    newExtractorLink(
                         source = name,
                         name = name,
                         url = finalVideoUrl,
