@@ -54,12 +54,15 @@ class Kissasian : MainAPI() {
         val poster = document.selectFirst(".ts-post-image")?.attr("src")
         val plot = document.selectFirst(".entry-content[itemprop=description]")?.text()?.trim()
         
+        // Grab the rating and tags
         val ratingText = document.selectFirst(".numscore")?.text()
-        // FIX: Cloudstream Scores are stored as Int (value * 1000). 
-        // A rating of 8.5 becomes 8500.
-        val apiScore = ratingText?.toFloatOrNull()?.let { (it * 1000).toInt() }
+        val tags = document.select(".genxed a").map { it.text() }.toMutableList()
         
-        val tags = document.select(".genxed a").map { it.text() }
+        // WORKAROUND: Inject the rating directly into the tags so it appears in the UI
+        if (!ratingText.isNullOrBlank()) {
+            tags.add(0, "⭐ $ratingText")
+        }
+        
         val actors = document.select(".split:contains(Casts:) a").map { ActorData(Actor(it.text())) }
 
         val episodes = document.select(".eplister ul li a, .bxcl ul li a").mapNotNull { element ->
@@ -80,15 +83,13 @@ class Kissasian : MainAPI() {
             newMovieLoadResponse(title, url, TvType.Movie, episodes.firstOrNull()?.data ?: url) {
                 this.posterUrl = poster
                 this.plot = plot
-                this.score = apiScore?.let { Score(it) }
-                this.tags = tags
+                this.tags = tags // Score is safely omitted and shown here instead
             }
         } else {
             newTvSeriesLoadResponse(title, url, tvType, episodes) {
                 this.posterUrl = poster
                 this.plot = plot
-                this.score = apiScore?.let { Score(it) }
-                this.tags = tags
+                this.tags = tags // Score is safely omitted and shown here instead
                 this.actors = actors
             }
         }
