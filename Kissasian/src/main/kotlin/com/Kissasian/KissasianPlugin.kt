@@ -7,10 +7,10 @@ import android.content.Context
 @CloudstreamPlugin
 class KissasianPlugin: Plugin() {
     override fun load(context: Context) {
-        // Register your scraper
+        // Register the main KissAsian scraper
         registerMainAPI(Kissasian())
         
-        // Register your custom extractors here!
+        // Register the custom extractors to handle the mirror links
         registerExtractorAPI(LuluvidExtractor())
         registerExtractorAPI(StrcloudExtractor())
     }
